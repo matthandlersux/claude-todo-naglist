@@ -1,6 +1,6 @@
 {
-  "name": "claude-asks",
-  "description": "The asks mod: keeps the things Claude sessions leave for you in one list.",
+  "name": "claude-todo-naglist",
+  "description": "The qs mod: keeps the things Claude sessions leave for you in one list.",
   "owner": { "name": "Matt Handler" },
-  "plugins": [{ "name": "asks", "source": "./", "description": "Keeps the things Claude asks of you in one list." }]
+  "plugins": [{ "name": "qs", "source": "./", "description": "Keeps the things Claude leaves for you (q's) in one list." }]
 }

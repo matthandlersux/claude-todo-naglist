@@ -1,4 +1,4 @@
-// asks (claude-asks repo): the state contract. The db (an artifact's `asks` collection)
+// qs (claude-todo-naglist repo): the state contract. The db (an artifact's `asks` collection)
 // is the truth; this is the session's cache of it, so drawing is synchronous.
 
 export type AskKind = 'do' | 'decide' | 'answer'
@@ -39,11 +39,11 @@ export type AskTab = 'session' | 'folder' | 'all'
 
 declare module 'claude-code' {
   interface PluginState {
-    'asks': {
+    'qs': {
       /** Every OPEN ask in the db, all folders. */
       asks: Ask[]
       here: AskHere | null
-      /** Per-session switch: true after `/asks off`. */
+      /** Per-session switch: true after `/qs off`. */
       isOff: boolean
       tab: AskTab
       /** The session's title, when the engine reports one. */

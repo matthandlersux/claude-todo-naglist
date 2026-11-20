@@ -233,7 +233,7 @@ export function byPriority(a: Ask, b: Ask): number {
 /** Every open ask in priority order. */
 export const allAsks = (asks: readonly Ask[]): Ask[] => [...asks].sort(byPriority)
 
-/** This session's open asks in the numbered order the band, pane and /asks use. */
+/** This session's open asks in the numbered order the band, pane and /qs use. */
 export function sessionAsks(asks: readonly Ask[], here: AskHere | null): Ask[] {
   if (!here) return []
   return asks.filter(a => a.sessionId === here.sessionId).sort(byPriority)
@@ -255,7 +255,7 @@ export function bandText(asks: readonly Ask[], here: AskHere | null): string {
   if (urgent > 0) counts.unshift(`${urgent} now`)
   const inFolder = folderAsks(asks, here).length
   const extra = inFolder > mine.length ? `   (${inFolder} in this folder)` : ''
-  return `${mine.length} open for you · ${counts.join(' · ')}${extra}   /asks`
+  return `${mine.length} q's for you · ${counts.join(' · ')}${extra}   /qs`
 }
 
 export function age(iso: string, now: number): string {

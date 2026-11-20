@@ -10,7 +10,7 @@ const URL = 'https://claude.ai/artifact/HNv6tEtKy3rXX2QzkVqRHs'
 type DbCall = Record<string, unknown> & { action: string; if_version?: number; data?: Record<string, unknown> }
 
 const BAND = {
-  plugin: 'asks',
+  plugin: 'qs',
   component: 'AbovePrompt',
   requestId: 'band',
   props: {
@@ -32,7 +32,7 @@ function engine(on: On, db: (e: DbCall) => { text: string; isError?: true }) {
   on('session.repo', () => ({ value: { root: '/home/m/repo', remote: null, internal: false, name: null } }))
   on('session.cwd', () => ({ value: '/home/m/repo/sub' }))
   on('session.usage', () => ({ value: { startedAt: Date.parse('2026-11-19T11:00:00Z') } as never }))
-  on('tool.register', (_, e) => ({ value: { tool: `mcp__asks__${e.name}` } }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__qs__${e.name}` } }))
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [] }))
@@ -83,9 +83,9 @@ test('band text counts this session, by kind, with the folder total', () => {
     { ...base, id: 'b', text: 'y', kind: 'decide', sessionId: 's1', createdAt: '2026-11-19T02:00:00Z' },
     { ...base, id: 'c', text: 'z', kind: 'answer', sessionId: 's2', createdAt: '2026-11-19T03:00:00Z' },
   ]
-  expect(bandText(asks, { sessionId: 's1', folder: '/r' })).toBe('2 open for you · 1 do · 1 decide   (3 in this folder)   /asks')
+  expect(bandText(asks, { sessionId: 's1', folder: '/r' })).toBe("2 q's for you · 1 do · 1 decide   (3 in this folder)   /qs")
   expect(bandText(asks, { sessionId: 's9', folder: '/r' })).toBe('')
-  expect(bandText([{ ...asks[0]!, urgency: 'now' }, asks[1]!], { sessionId: 's1', folder: '/r' })).toMatch(/^2 open for you · 1 now · 1 do/)
+  expect(bandText([{ ...asks[0]!, urgency: 'now' }, asks[1]!], { sessionId: 's1', folder: '/r' })).toMatch(/^2 q's for you · 1 now · 1 do/)
 })
 
 test('priority: urgency, then not ignorable, then untriaged, then rank, then newest', () => {
@@ -137,7 +137,7 @@ test('asks_add writes a set through ArtifactData and the band shows it', async (
   await start($)
 
   const ran = await $.tool.call({
-    tool: 'mcp__asks__asks_add',
+    tool: 'mcp__qs__qs_add',
     text: 'Rotate the API key on sodium',
     kind: 'do',
     urgency: 'now',
@@ -165,12 +165,12 @@ test('asks_add writes a set through ArtifactData and the band shows it', async (
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect((await ui.find({ key: 'asks-band' }))?.text).toMatch(/^1 open for you · 1 now · 1 do/)
+    expect((await ui.find({ key: 'qs-band' }))?.text).toMatch(/^1 q's for you · 1 now · 1 do/)
     await ui.unmount()
   }
 
   // the same text again is not filed twice
-  await $.tool.call({ tool: 'mcp__asks__asks_add', text: 'rotate the API key on sodium.', kind: 'do' })
+  await $.tool.call({ tool: 'mcp__qs__qs_add', text: 'rotate the API key on sodium.', kind: 'do' })
   expect(calls.filter(c => c.action === 'set').length).toBe(1)
 })
 
@@ -190,10 +190,10 @@ test('asks_resolve passes if_version, and retries once on a conflict', async ($,
   })
   await start($)
 
-  const added = await $.tool.call({ tool: 'mcp__asks__asks_add', text: 'Pick a name', kind: 'decide' })
+  const added = await $.tool.call({ tool: 'mcp__qs__qs_add', text: 'Pick a name', kind: 'decide' })
   const id = /a-[a-z0-9]+-[a-z0-9]+/.exec(added.text ?? String(added.result))?.[0] ?? ''
 
-  const ran = await $.tool.call({ tool: 'mcp__asks__asks_resolve', id, status: 'done' })
+  const ran = await $.tool.call({ tool: 'mcp__qs__qs_resolve', id, status: 'done' })
   expect(ran.text ?? String(ran.result)).toBe(`Marked ${id} done.`)
   const writes = calls.filter(c => c.action === 'update')
   expect(writes.map(w => w.if_version)).toEqual([3, 4])
@@ -205,21 +205,21 @@ test('asks_resolve passes if_version, and retries once on a conflict', async ($,
 test('/asks off: no prompt section, tools refuse, no band; /asks on brings it back', async ($, on) => {
   const calls = engine(on, okDb)
   await start($)
-  await $.tool.call({ tool: 'mcp__asks__asks_add', text: 'Answer the question', kind: 'answer' })
+  await $.tool.call({ tool: 'mcp__qs__qs_add', text: 'Answer the question', kind: 'answer' })
 
-  const hasSection = async () => (await $.prompt.compose(composeArgs)).sections.some(s => s.id === 'asks:asks')
+  const hasSection = async () => (await $.prompt.compose(composeArgs)).sections.some(s => s.id === 'qs:qs')
   expect(await hasSection()).toBe(true)
 
-  await $.command.run({ command: 'asks', args: 'off', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  await $.command.run({ command: 'qs', args: 'off', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   expect(await hasSection()).toBe(false)
-  const ran = await $.tool.call({ tool: 'mcp__asks__asks_add', text: 'Something else', kind: 'do' })
-  expect(ran.text ?? String(ran.result)).toMatch(/asks capture is off in this session/)
+  const ran = await $.tool.call({ tool: 'mcp__qs__qs_add', text: 'Something else', kind: 'do' })
+  expect(ran.text ?? String(ran.result)).toMatch(/Q's capture is off in this session/)
   expect(calls.filter(c => c.action === 'set').length).toBe(1)
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await ui.find({ key: 'asks-band' })).toBeUndefined()
+  expect(await ui.find({ key: 'qs-band' })).toBeUndefined()
   await ui.unmount()
 
-  await $.command.run({ command: 'asks', args: 'on', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  await $.command.run({ command: 'qs', args: 'on', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
   expect(await hasSection()).toBe(true)
 })
 
@@ -227,13 +227,13 @@ test('the pane lists the ask with its number and Done closes it, on every surfac
   const calls = engine(on, e => (e.action === 'update' ? { text: 'Updated at version 4.' } : okDb(e)))
   await start($)
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
-    const added = await $.tool.call({ tool: 'mcp__asks__asks_add', text: `Check the backup on ${surface}`, kind: 'do' })
+    const added = await $.tool.call({ tool: 'mcp__qs__qs_add', text: `Check the backup on ${surface}`, kind: 'do' })
     const id = /a-[a-z0-9]+-[a-z0-9]+/.exec(added.text ?? String(added.result))?.[0] ?? ''
     const ui = await $.ui.mount({
-      plugin: 'asks',
+      plugin: 'qs',
       surface,
       component: 'Pane',
-      requestId: 'asks',
+      requestId: 'qs',
       props: { title: 'Asks', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
     })
     expect(await ui.find({ type: 'Text', text: /1\. soon \[do\] Check the backup/ })).toBeDefined()
@@ -266,8 +266,8 @@ test('/asks triage claims the meta doc, batches the new order with version pins,
   } }) as never)
   await start($)
 
-  const out = await $.command.run({ command: 'asks', args: 'triage', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
-  expect(out.text).toBe('Triaged 2 asks; 2 changed.')
+  const out = await $.command.run({ command: 'qs', args: 'triage', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect(out.text).toBe("Triaged 2 q's; 2 changed.")
   const metaWrites = calls.filter(c => c.collection === 'asksMeta' && c.action !== 'get')
   expect(metaWrites.length).toBe(2)
   expect(String(metaWrites[0]?.data?.runningUntil)).not.toBe('')

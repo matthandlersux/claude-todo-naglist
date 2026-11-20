@@ -1,4 +1,4 @@
-<title>Asks for Matt</title>
+<title>Q's for Matt</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
@@ -66,7 +66,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); o
 
 <div class="wrap">
   <header>
-    <h1>Asks for Matt</h1>
+    <h1>Q's for Matt</h1>
     <div class="counts" id="counts">Loading…</div>
     <div class="filters">
       <select id="folder" aria-label="Folder"><option value="">All folders</option></select>
@@ -82,7 +82,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); o
     </div>
   </header>
   <main id="list">
-    <div class="empty"><b>Nothing here yet.</b>When a Claude Code session with the claude-asks mod leaves you something to do, decide or answer, it shows up here, most important first.</div>
+    <div class="empty"><b>Nothing here yet.</b>When a Claude Code session with the qs mod leaves you something to do, decide or answer, it shows up here, most important first.</div>
   </main>
 </div>
 
@@ -146,7 +146,7 @@ function render() {
     .sort((x, y) => (filter.closed ? (y.closedAt || "").localeCompare(x.closedAt || "") : byPriority(x, y)));
   if (!shown.length) {
     $("list").replaceChildren(el("div", { class: "empty" }, el("b", {}, filter.closed ? "Nothing closed here yet." : "All clear."),
-      filter.closed ? "Asks you mark done or dismiss move here." : "No open asks for this view. New ones appear here as Claude sessions file them."));
+      filter.closed ? "Q's you mark done or dismiss move here." : "No open q's for this view. New ones appear here as Claude sessions file them."));
     return;
   }
   if (!filter.grouped) {
@@ -217,6 +217,6 @@ $("show-closed").addEventListener("click", () => { filter.closed = true; saveFil
     clearTimeout(timer);
     asks = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(a => a.text);
     render();
-  }, err => { clearTimeout(timer); $("counts").replaceChildren(el("span", { class: "err" }, "Couldn't load your asks (" + err.code + "). Reload the page to try again.")); });
+  }, err => { clearTimeout(timer); $("counts").replaceChildren(el("span", { class: "err" }, "Couldn't load your q's (" + err.code + "). Reload the page to try again.")); });
 })();
 </script>

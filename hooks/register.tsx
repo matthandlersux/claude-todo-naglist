@@ -1,6 +1,6 @@
-// asks (repo claude-asks): files every to-do, decision and question a session leaves for
-// the person into one db (an artifact's `asks` collection), shows the count
-// above the prompt and lists them in a pane opened by /asks.
+// qs (repo claude-todo-naglist): files every to-do, decision and question (a "q") a session
+// leaves for the person into one db (an artifact's `asks` collection), shows the count
+// above the prompt and lists them in a pane opened by /qs.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
@@ -28,32 +28,31 @@ import {
   writeTriageMeta,
 } from './db'
 
-const PLUGIN = 'asks'
-const PANE = 'asks'
-const OFF_TEXT = 'asks capture is off in this session (turn it on with /asks on).'
+const PLUGIN = 'qs'
+const PANE = 'qs'
+const OFF_TEXT = "Q's capture is off in this session (turn it on with /qs on)."
 const DEFAULT_URL = 'https://claude.ai/artifact/HNv6tEtKy3rXX2QzkVqRHs'
 
-const asksAtom = atom({ plugin: 'asks', key: 'asks' } as const, [])
-const hereAtom = atom({ plugin: 'asks', key: 'here' } as const, null)
-const offAtom = atom({ plugin: 'asks', key: 'isOff' } as const, false)
-const tabAtom = atom({ plugin: 'asks', key: 'tab' } as const, 'session')
-const titleAtom = atom({ plugin: 'asks', key: 'title' } as const, '')
-const errorAtom = atom({ plugin: 'asks', key: 'error' } as const, '')
+const asksAtom = atom({ plugin: 'qs', key: 'asks' } as const, [])
+const hereAtom = atom({ plugin: 'qs', key: 'here' } as const, null)
+const offAtom = atom({ plugin: 'qs', key: 'isOff' } as const, false)
+const tabAtom = atom({ plugin: 'qs', key: 'tab' } as const, 'session')
+const titleAtom = atom({ plugin: 'qs', key: 'title' } as const, '')
+const errorAtom = atom({ plugin: 'qs', key: 'error' } as const, '')
 
-const TOOL = {
-  add: 'mcp__asks__asks_add',
-  resolve: 'mcp__asks__asks_resolve',
-  list: 'mcp__asks__asks_list',
-} as const
+// The full names are mcp__<server>__qs_*, where the server name is the engine's (it can lag a
+// rename), so hooks match on the ending and the prompt names what tool.register reported.
+const TOOL = { add: 'qs_add', resolve: 'qs_resolve', list: 'qs_list' }
+const MATCH = { add: /__qs_add$/, resolve: /__qs_resolve$/, list: /__qs_list$/ }
 
-const PROMPT_SECTION = `# Asks for the user (asks mod)
+const promptSection = () => `# Q's for the user (qs mod)
 Whenever a reply leaves the user something to do, decide or answer, file each one with the \`${TOOL.add}\` tool as part of that reply: one call per item, kind "do", "decide" or "answer", and a short imperative text that makes sense on its own, away from this conversation (name the repo, file, server or thing it is about, and copy in any link, path or command the user needs to act on it).
 Every ask needs your best guess at two things, even when unsure:
 - urgency (time): "now" if it matters today or something is waiting on it right now, "soon" for this week, "later" if there is no clock on it.
 - ignorable: true only if nothing real is tied to it, blocked on it or half done, so it could sit forever without harm. When false, say in blocks what it blocks, is tied to, or what is half done.
 Don't file what you will do yourself, and don't file generic offers like "let me know if you want more".
 When the user says they did an item, or answers or decides it, close it with \`${TOOL.resolve}\` (status "done", or "dismissed" when it no longer applies).
-Don't re-file an item that is still open: check \`${TOOL.list}\` (this session's open asks with their ids) when unsure.`
+Don't re-file an item that is still open: check \`${TOOL.list}\` (this session's open q's with their ids) when unsure.`
 
 const SWEEP_SYSTEM =
   'You find what an assistant reply leaves for the USER to do, decide or answer. You answer with a JSON array only.'
@@ -265,7 +264,7 @@ Answer with a JSON array of every id, in order: [{"id", "urgency", "ignorable", 
     const after = await readTriageMeta($, url)
     await writeTriageMeta($, url, after, { lastRun: r.isAnswered ? nowIso : (meta?.lastRun ?? ''), runningUntil: '' })
     await refresh($)
-    return r.isAnswered ? `Triaged ${list.length} asks; ${changed} changed.` : `Triage got no answer (${r.reason}).`
+    return r.isAnswered ? `Triaged ${list.length} q's; ${changed} changed.` : `Triage got no answer (${r.reason}).`
   } catch (err) {
     fail($, 'triage failed', err)
     return `Triage failed: ${err instanceof Error ? err.message : String(err)}`
@@ -276,7 +275,7 @@ Answer with a JSON array of every id, in order: [{"id", "urgency", "ignorable", 
 
 
 async function openPane($: EngineInterface) {
-  await $.ui.open({ id: PANE, title: 'Asks' })
+  await $.ui.open({ id: PANE, title: "Q's" })
   void refreshQuietly($)
 }
 
@@ -295,10 +294,10 @@ export const register: Register = (on, rawOptions) => {
   // ---- session start: tools, command, timer ------------------------------
 
   on('session.start', async ($, e, next) => {
-    await $.tool.register({
-      name: 'asks_add',
+    TOOL.add = (await $.tool.register({
+      name: 'qs_add',
       description:
-        'File one thing the user has to do, decide or answer, so it lands on their asks list. One call per item; short imperative text that stands on its own.',
+        "File one thing the user has to do, decide or answer, so it lands on their q's list. One call per item; short imperative text that stands on its own.",
       inputSchema: {
         type: 'object',
         properties: {
@@ -321,32 +320,32 @@ export const register: Register = (on, rawOptions) => {
         required: ['text', 'kind', 'urgency', 'ignorable'],
       },
       isDeferred: false,
-    })
-    await $.tool.register({
-      name: 'asks_resolve',
+    })).tool
+    TOOL.resolve = (await $.tool.register({
+      name: 'qs_resolve',
       description: 'Close an ask once the user did it or answered it (done), or it no longer applies (dismissed).',
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'The id asks_add or asks_list gave.' },
+          id: { type: 'string', description: 'The id qs_add or qs_list gave.' },
           status: { type: 'string', enum: ['done', 'dismissed'] },
         },
         required: ['id', 'status'],
       },
       isDeferred: false,
-    })
-    await $.tool.register({
-      name: 'asks_list',
-      description: "List the user's open asks with their ids: this session's (default), this folder's, or all.",
+    })).tool
+    TOOL.list = (await $.tool.register({
+      name: 'qs_list',
+      description: "List the user's open q's with their ids: this session's (default), this folder's, or all.",
       inputSchema: {
         type: 'object',
         properties: { scope: { type: 'string', enum: ['session', 'folder', 'all'] } },
       },
       isDeferred: false,
-    })
+    })).tool
     await $.command.register({
-      name: 'asks',
-      description: 'Show the things Claude left for you (asks); /asks done|dismiss <n>, /asks triage, /asks off|on',
+      name: 'qs',
+      description: "Show the things Claude left for you (q's); /qs done|dismiss <n>, /qs triage, /qs off|on",
       argumentHint: '[done <n> | dismiss <n> | triage | off | on]',
     })
     $.clock.every(60_000, () => {
@@ -380,13 +379,13 @@ export const register: Register = (on, rawOptions) => {
     if (await read($, offAtom)) return composed
     return {
       ...composed,
-      sections: [...composed.sections, { id: `${PLUGIN}:asks`, text: PROMPT_SECTION, scope: 'session' as const }],
+      sections: [...composed.sections, { id: `${PLUGIN}:qs`, text: promptSection(), scope: 'session' as const }],
     }
   })
 
   // ---- the model's tools ---------------------------------------------------
 
-  on('tool.call', { tool: 'mcp__asks__asks_add' }, async ($, e) => {
+  on('tool.call', { tool: MATCH.add }, async ($, e) => {
     if (await read($, offAtom)) return { result: OFF_TEXT }
     const input = e as unknown as { text?: unknown; kind?: unknown; urgency?: unknown; ignorable?: unknown; blocks?: unknown }
     const text = typeof input.text === 'string' ? input.text.trim() : ''
@@ -399,12 +398,12 @@ export const register: Register = (on, rawOptions) => {
       const ask = await fileAsk($, text, kind, judged(input), 'tool')
       return { result: `Filed ${ask.id} (${kind}, ${ask.urgency}${ask.ignorable ? ', ignorable' : ''}).` }
     } catch (err) {
-      fail($, 'asks_add failed', err)
+      fail($, 'qs_add failed', err)
       return { result: `Could not file it: ${err instanceof Error ? err.message : String(err)}` }
     }
-  }).catch(() => ({ result: 'The asks tool failed; see the debug log.' }))
+  }).catch(() => ({ result: "The q's tool failed; see the debug log." }))
 
-  on('tool.call', { tool: 'mcp__asks__asks_resolve' }, async ($, e) => {
+  on('tool.call', { tool: MATCH.resolve }, async ($, e) => {
     if (await read($, offAtom)) return { result: OFF_TEXT }
     const input = e as unknown as { id?: unknown; status?: unknown }
     const id = typeof input.id === 'string' ? input.id.trim() : ''
@@ -416,19 +415,19 @@ export const register: Register = (on, rawOptions) => {
       await resolveAsk($, ask, status, 'session')
       return { result: `Marked ${id} ${status}.` }
     } catch (err) {
-      fail($, 'asks_resolve failed', err)
+      fail($, 'qs_resolve failed', err)
       return { result: `Could not close it: ${err instanceof Error ? err.message : String(err)}` }
     }
-  }).catch(() => ({ result: 'The asks tool failed; see the debug log.' }))
+  }).catch(() => ({ result: "The q's tool failed; see the debug log." }))
 
-  on('tool.call', { tool: 'mcp__asks__asks_list' }, async ($, e) => {
+  on('tool.call', { tool: MATCH.list }, async ($, e) => {
     if (await read($, offAtom)) return { result: OFF_TEXT }
     const scope = (e as unknown as { scope?: unknown }).scope
     let open: Ask[]
     try {
       open = await refresh($)
     } catch (err) {
-      fail($, 'asks_list failed', err)
+      fail($, 'qs_list failed', err)
       open = await read($, asksAtom)
     }
     const here = await read($, hereAtom)
@@ -438,7 +437,7 @@ export const register: Register = (on, rawOptions) => {
         : scope === 'folder'
           ? folderAsks(open, here)
           : sessionAsks(open, here)
-    if (shown.length === 0) return { result: 'No open asks.' }
+    if (shown.length === 0) return { result: "No open q's." }
     const lines = shown.map(
       a =>
         `${a.id} · ${a.urgency}${a.ignorable ? ' · ignorable' : ''} · ${a.kind} · ${a.text}` +
@@ -446,7 +445,7 @@ export const register: Register = (on, rawOptions) => {
         (scope === 'session' || scope === undefined ? '' : ` (${a.folderName || a.folder})`),
     )
     return { result: lines.join('\n') }
-  }).catch(() => ({ result: 'The asks tool failed; see the debug log.' }))
+  }).catch(() => ({ result: "The q's tool failed; see the debug log." }))
 
   // ---- turns: refresh, and the safety-net sweep ---------------------------
 
@@ -466,21 +465,21 @@ export const register: Register = (on, rawOptions) => {
     return next(e)
   })
 
-  // ---- /asks ---------------------------------------------------------------
+  // ---- /qs ---------------------------------------------------------------
 
-  on('command.run', { command: 'asks' }, async ($, e) => {
+  on('command.run', { command: 'qs' }, async ($, e) => {
     const [verb = '', arg = ''] = e.args.trim().toLowerCase().split(/\s+/)
     if (verb === '') {
       await openPane($)
-      return { text: 'Asks pane opened.' }
+      return { text: "Q's pane opened." }
     }
     if (verb === 'off' || verb === 'on') {
       await update($, offAtom, () => verb === 'off')
       return {
         text:
           verb === 'off'
-            ? 'Asks capture is off in this session: no prompt section, no sweep, no band.'
-            : 'Asks capture is on in this session.',
+            ? "Q's capture is off in this session: no prompt section, no sweep, no band."
+            : "Q's capture is on in this session.",
       }
     }
     if (verb === 'done' || verb === 'dismiss') {
@@ -493,12 +492,12 @@ export const register: Register = (on, rawOptions) => {
         await resolveAsk($, ask, verb === 'done' ? 'done' : 'dismissed', 'session')
         return { text: `${verb === 'done' ? 'Done' : 'Dismissed'}: ${ask.text}` }
       } catch (err) {
-        fail($, `/asks ${verb} failed`, err)
+        fail($, `/qs ${verb} failed`, err)
         return { text: `Could not change it: ${err instanceof Error ? err.message : String(err)}` }
       }
     }
     if (verb === 'triage') return { text: await maybeTriage($, true) }
-    return { text: 'Usage: /asks  |  /asks done <n>  |  /asks dismiss <n>  |  /asks triage  |  /asks off  |  /asks on' }
+    return { text: 'Usage: /qs  |  /qs done <n>  |  /qs dismiss <n>  |  /qs triage  |  /qs off  |  /qs on' }
   })
 
   // ---- the band above the prompt ---------------------------------------------
@@ -510,7 +509,7 @@ export const register: Register = (on, rawOptions) => {
     const { Box, Button } = $.ui.resolve(e)
     return (
       <Box>
-        <Button key="asks-band" plain onPress={() => openPane($)}>
+        <Button key="qs-band" plain onPress={() => openPane($)}>
           {line}
         </Button>
       </Box>
@@ -557,11 +556,12 @@ export const register: Register = (on, rawOptions) => {
           {tabButton('all', `All ${asks.length}`)}
           <Button key="refresh" label="Refresh" onPress={() => void refreshQuietly($)} />
         </Box>
-        {isOff && <Text dimColor>Capture is off in this session (/asks on).</Text>}
+        {isOff && <Text dimColor>Capture is off in this session (/qs on).</Text>}
         {error !== '' && <Text color="red">{error}</Text>}
         {shown.length === 0 && <Text dimColor>Nothing open here.</Text>}
+        <Box flexDirection="column" gap={1} marginTop={1}>
         {shown.map(a => (
-          <Box flexDirection="column" marginTop={1}>
+          <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
             <Text wrap="wrap" dimColor={a.ignorable}>
               {numbers.has(a.id) ? `${numbers.get(a.id)}. ` : '   '}
               <Text color={a.urgency === 'now' ? 'red' : a.urgency === 'soon' ? 'yellow' : 'gray'}>{a.urgency}</Text>{' '}
@@ -578,6 +578,7 @@ export const register: Register = (on, rawOptions) => {
             </Box>
           </Box>
         ))}
+        </Box>
         <Box marginTop={1}>
           <Text dimColor>On your phone: {url}</Text>
         </Box>

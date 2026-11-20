@@ -29,10 +29,10 @@ files every one of them into one list on your claude.ai account and keeps the co
 At the prompt of a terminal session:
 
 ```
-/plugin install asks --marketplace <owner>/claude-asks
+/plugin install asks --marketplace matthandlersux/claude-todo-naglist
 ```
 
-Answer `y` to add the marketplace, then pick a scope. (From a shell: `claude plugin install asks --marketplace <owner>/claude-asks`.)
+Answer `y` to add the marketplace, then pick a scope. (From a shell: `claude plugin install asks --marketplace matthandlersux/claude-todo-naglist`.)
 
 ## Allow ArtifactData
 

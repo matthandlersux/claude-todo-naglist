@@ -336,6 +336,11 @@ test('answers picked on the page reach the filing session once, pinned to the ve
             ].join('\n'),
           }
     }
+    if (e.action === 'query') {
+      return {
+        text: '=== BEGIN ARTIFACT DB asks ===\n{"id":"a-x","data":{"text":"Approve the deploy","kind":"decide","status":"open","sessionId":"sess-1","createdAt":"2026-11-19T11:00:00Z"},"version":5}\n=== END ARTIFACT DB asks ===',
+      }
+    }
     if (e.action === 'update') {
       delivered = true
       return { text: 'Updated at version 7.' }
@@ -343,7 +348,16 @@ test('answers picked on the page reach the filing session once, pinned to the ve
     return okDb(e)
   })
   await start($)
+  // the cache still holds it as open (read before the page answered it)
+  await $.tool.call({ tool: 'mcp__qs__qs_list' })
+  const before = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await before.find({ key: 'qs-band' }))?.text).toMatch(/^1 q's for you/)
+  await before.unmount()
   await clock.advance(5_000)
+  // delivered: gone from the band without waiting for a refresh
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ key: 'qs-band' })).toBeUndefined()
+  await ui.unmount()
   const marks = calls.filter(c => c.action === 'update')
   expect(marks.map(m => [m.doc_id, m.if_version, typeof m.data?.deliveredAt])).toEqual([['a-x', 6, 'string']])
   expect(submitted).toEqual(['Answer to "Approve the deploy": Deploy'])

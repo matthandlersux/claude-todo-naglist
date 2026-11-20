@@ -176,6 +176,8 @@ async function deliverAnswers($: EngineInterface) {
     for (const ask of await readUndelivered($, url, here.sessionId)) {
       const now = new Date(await $.clock.now()).toISOString()
       if (!(await markDelivered($, url, ask, now))) continue
+      // answered elsewhere: off the band and pane now, not at the next refresh
+      await update($, asksAtom, list => list.filter(a => a.id !== ask.id))
       $.ui.toast(`Answered: ${ask.answer}`)
       await $.prompt.submit({ text: answerText(ask, ask.answer ?? ''), asUser: true })
     }

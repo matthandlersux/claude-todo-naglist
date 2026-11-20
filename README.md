@@ -16,6 +16,10 @@ goes into one list on your claude.ai account, with the count kept in sight.
   and folders and puts them in order: every 6 hours, or 20 minutes after the last pass when new asks are
   waiting. New asks sort to the top of their urgency until a pass places them. Only one session runs a pass
   at a time (a claim doc in collection `asksMeta`). `/qs triage` runs one now.
+- **Reply buttons.** When your part is just clicking (approve a push, pick A or B), Claude files the q with
+  2-3 buttons, e.g. **Push** / **Not yet**. Click one in the pane or on your phone: the q closes with that
+  answer and the session that filed it gets it as your reply and carries on. From the phone it arrives within
+  a minute (each session checks once a minute); a closed session gets it when you resume it.
 - **Safety net.** After each longer reply a cheap model call (haiku) checks for q's Claude forgot to file
   and adds them (marked `sweep`). It never holds up the turn. Can be switched off.
 - **Always visible.** A line above the prompt: `3 q's for you · 1 do · 1 decide · 1 answer   (7 in this folder)   /qs`.
@@ -66,7 +70,7 @@ One document per q in the page's `asks` collection (the name predates the rename
 (open/done/dismissed), `folder` (the git root, else the working directory), `folderName`, `sessionId`,
 `sessionName` (the session's title when Claude Code reports one), `sessionStarted`, `createdAt`,
 `closedAt`, `closedBy` (session/pane/page), `source` (tool/sweep), `urgency` (now/soon/later),
-`ignorable`, `blocks`, `rank` (the last triage's position, null until triaged), `triagedAt`.
+`ignorable`, `blocks`, `options` (reply buttons), `answer`, `answeredAt`, `deliveredAt`, `rank` (the last triage's position, null until triaged), `triagedAt`.
 Collection `asksMeta`, doc `triage`: `lastRun`, `runningUntil` (the claim). The database is the truth; the
 session keeps a cache of the open ones, refreshed when the pane opens, after each write, at the start
 and end of every turn, and every minute while the pane is open.

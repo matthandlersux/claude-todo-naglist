@@ -23,10 +23,19 @@ const BAND = {
   },
 } as const
 
+let clock: ReturnType<typeof mock.clock>
+const submitted: string[] = []
+
 /** Stands for the engine beneath the plugin; `db` answers each ArtifactData call. */
 function engine(on: On, db: (e: DbCall) => { text: string; isError?: true }) {
   const calls: DbCall[] = []
-  mock.clock(on, { now: Date.parse('2026-11-19T12:00:00Z') })
+  clock = mock.clock(on, { now: Date.parse('2026-11-19T12:00:00Z') })
+  submitted.length = 0
+  on('prompt.submit', (_, e) => {
+    submitted.push(e.text)
+    return { text: e.text } as never
+  })
+  on('ui.toast', () => ({ value: undefined }) as never)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 'sess-1' }))
   on('session.repo', () => ({ value: { root: '/home/m/repo', remote: null, internal: false, name: null } }))
@@ -279,4 +288,65 @@ test('/asks triage claims the meta doc, batches the new order with version pins,
     ['a1', 7, 2, 'asks'],
   ])
   expect(batch.writes[1]?.data.ignorable).toBe(true)
+})
+
+test('an answer button closes the q with the answer and sends it into this session', async ($, on) => {
+  const calls = engine(on, e => (e.action === 'update' ? { text: 'Updated at version 4.' } : okDb(e)))
+  await start($)
+  const added = await $.tool.call({
+    tool: 'mcp__qs__qs_add',
+    text: 'Decide whether to push claude-todo-naglist',
+    kind: 'decide',
+    urgency: 'soon',
+    ignorable: false,
+    options: ['Push', 'Not yet', 'push', '', 'Extra', 'Four'],
+  })
+  const id = /a-[a-z0-9]+-[a-z0-9]+/.exec(added.text ?? String(added.result))?.[0] ?? ''
+  expect(calls.find(c => c.action === 'set')?.data?.options).toEqual(['Push', 'Not yet', 'Extra'])
+
+  const ui = await $.ui.mount({
+    plugin: 'qs',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'qs',
+    props: { title: "Q's", isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
+  })
+  expect(await ui.find({ key: `done:${id}` })).toBeUndefined()
+  await ui.press({ key: `answer:${id}:0` })
+  const write = calls.filter(c => c.action === 'update').at(-1)
+  expect(write?.data?.status).toBe('done')
+  expect(write?.data?.answer).toBe('Push')
+  expect(typeof write?.data?.deliveredAt).toBe('string')
+  expect(submitted).toEqual(['Answer to "Decide whether to push claude-todo-naglist": Push'])
+  await ui.unmount()
+})
+
+test('answers picked on the page reach the filing session once, pinned to the version read', async ($, on) => {
+  let delivered = false
+  const calls = engine(on, e => {
+    if (e.action === 'query' && JSON.stringify(e.query).includes('sessionId')) {
+      return delivered
+        ? { text: 'No documents matched.' }
+        : {
+            text: [
+              '=== BEGIN ARTIFACT DB asks ===',
+              '{"id":"a-x","data":{"text":"Approve the deploy","kind":"decide","status":"done","sessionId":"sess-1","answer":"Deploy","options":["Deploy","Wait"]},"version":6}',
+              '{"id":"a-y","data":{"text":"Old","kind":"do","status":"done","sessionId":"sess-1","answer":"Yes","deliveredAt":"t"},"version":2}',
+              '=== END ARTIFACT DB asks ===',
+            ].join('\n'),
+          }
+    }
+    if (e.action === 'update') {
+      delivered = true
+      return { text: 'Updated at version 7.' }
+    }
+    return okDb(e)
+  })
+  await start($)
+  await clock.advance(5_000)
+  const marks = calls.filter(c => c.action === 'update')
+  expect(marks.map(m => [m.doc_id, m.if_version, typeof m.data?.deliveredAt])).toEqual([['a-x', 6, 'string']])
+  expect(submitted).toEqual(['Answer to "Approve the deploy": Deploy'])
+  await clock.advance(60_000)
+  expect(submitted.length).toBe(1)
 })

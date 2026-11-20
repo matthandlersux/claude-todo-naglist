@@ -56,6 +56,7 @@ li.ignorable .text { color: var(--muted); }
 .actions { display: flex; gap: 6px; }
 .actions button { background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 13px; cursor: pointer; }
 .actions button:hover { border-color: var(--accent); }
+.actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
 button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .empty { color: var(--muted); padding: 24px 0; display: grid; gap: 6px; }
 .empty b { color: var(--fg); }
@@ -182,23 +183,37 @@ function item(a, flat) {
   li.append(el("span", { class: "kind " + a.kind }, KINDS[a.kind] || a.kind),
     el("span", { class: "text" }, el("span", { class: "urg " + urgOf(a) }, urgOf(a)), a.text || ""));
   const acts = el("div", { class: "actions" });
+  const options = Array.isArray(a.options) ? a.options.filter(o => typeof o === "string" && o).slice(0, 3) : [];
   if (a.status === "open") {
-    acts.append(btn("Done", () => setStatus(a, "done")), btn("Dismiss", () => setStatus(a, "dismissed")));
+    // a reply button closes the q with that answer; the session that filed it picks it up within a minute
+    if (options.length) acts.append(...options.map(o => btn(o, () => answer(a, o), "primary")));
+    else acts.append(btn("Done", () => setStatus(a, "done")));
+    acts.append(btn("Dismiss", () => setStatus(a, "dismissed")));
   } else acts.append(btn("Reopen", () => setStatus(a, "open")));
   li.append(acts);
-  const meta = a.status === "open" ? "Asked " + when(a.createdAt) : (a.status === "done" ? "Done " : "Dismissed ") + when(a.closedAt);
+  const meta = a.status === "open" ? "Asked " + when(a.createdAt)
+    : a.answer ? "Answered \u201c" + a.answer + "\u201d " + when(a.closedAt) + (a.deliveredAt ? " · sent to the session" : " · waiting for the session")
+    : (a.status === "done" ? "Done " : "Dismissed ") + when(a.closedAt);
   const why = a.ignorable === true ? "Ignorable: nothing waits on it" : a.blocks ? "Blocks: " + a.blocks : "";
   if (why) li.append(el("span", { class: "why" }, why));
   const where = flat ? " · " + (a.folderName || a.folder || "") + (a.sessionName ? " / " + a.sessionName : "") : "";
   li.append(el("span", { class: "meta" }, meta + where));
   return li;
 }
-function btn(label, fn) { const b = el("button", { type: "button" }, label); b.addEventListener("click", fn); return b; }
+function btn(label, fn, cls) { const b = el("button", { type: "button", class: cls || "" }, label); b.addEventListener("click", fn); return b; }
 
+async function answer(a, option) {
+  if (!db) return;
+  const now = new Date().toISOString();
+  try {
+    await db.collection("asks").doc(a.id).update({ status: "done", answer: option, answeredAt: now, deliveredAt: null, closedAt: now, closedBy: "page" });
+  } catch (e) { $("counts").replaceChildren(el("span", { class: "err" }, "Couldn't send that answer: " + (e && e.message || e) + ". Try again.")); }
+}
 async function setStatus(a, status) {
   if (!db) return;
   try {
-    await db.collection("asks").doc(a.id).update({ status, closedAt: status === "open" ? null : new Date().toISOString(), closedBy: status === "open" ? null : "page" });
+    const reopen = status === "open" ? { answer: null, answeredAt: null, deliveredAt: null } : {};
+    await db.collection("asks").doc(a.id).update({ status, closedAt: status === "open" ? null : new Date().toISOString(), closedBy: status === "open" ? null : "page", ...reopen });
   } catch (e) { $("counts").replaceChildren(el("span", { class: "err" }, "Couldn't save that change: " + (e && e.message || e) + ". Try again.")); }
 }
 

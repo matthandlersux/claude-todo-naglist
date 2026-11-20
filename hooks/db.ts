@@ -116,6 +116,40 @@ export function toAsk(doc: RawDoc): Ask | null {
     blocks: str(d.blocks),
     rank: typeof d.rank === 'number' ? d.rank : null,
     triagedAt: typeof d.triagedAt === 'string' ? d.triagedAt : null,
+    options: cleanOptions(d.options),
+    answer: typeof d.answer === 'string' && d.answer !== '' ? d.answer : null,
+    deliveredAt: typeof d.deliveredAt === 'string' ? d.deliveredAt : null,
+  }
+}
+
+/** Up to 3 short, distinct button labels. */
+export function cleanOptions(v: unknown): string[] {
+  if (!Array.isArray(v)) return []
+  const out: string[] = []
+  for (const o of v) {
+    if (typeof o !== 'string') continue
+    const t = o.trim().slice(0, 40)
+    if (t && !out.some(x => x.toLowerCase() === t.toLowerCase())) out.push(t)
+  }
+  return out.slice(0, 3)
+}
+
+/** This session's answered asks whose answer hasn't reached the conversation yet. */
+export async function readUndelivered($: EngineInterface, url: string, sessionId: string): Promise<Ask[]> {
+  const text = await call($, url, { action: 'query', query: { where: [['sessionId', '==', sessionId]], limit: 1000 } })
+  return parseDocs(text)
+    .map(toAsk)
+    .filter((a): a is Ask => a !== null && a.answer !== null && a.deliveredAt === null)
+}
+
+/** Marks an answer delivered, pinned to the version it was read at: false when another reader got there first. */
+export async function markDelivered($: EngineInterface, url: string, ask: Ask, nowIso: string): Promise<boolean> {
+  try {
+    await call($, url, { action: 'update', doc_id: ask.id, data: { deliveredAt: nowIso }, if_version: ask.version })
+    return true
+  } catch (err) {
+    if (err instanceof DbError && err.isConflict) return false
+    throw err
   }
 }
 
@@ -151,8 +185,9 @@ export async function close(
   ask: Ask,
   status: 'done' | 'dismissed',
   closedBy: string,
+  extra: Record<string, unknown> = {},
 ): Promise<void> {
-  const data = { status, closedAt: new Date().toISOString(), closedBy }
+  const data = { status, closedAt: new Date().toISOString(), closedBy, ...extra }
   let version = ask.version
   if (!version) version = (await readOne($, url, ask.id))?.version ?? 0
   try {
@@ -293,12 +328,13 @@ function jsonArray(text: string): unknown[] {
 }
 
 /** Parses the sweep model's reply: a JSON array of { text, kind, urgency, ignorable, blocks }. */
-export function parseSweep(text: string): ({ text: string; kind: AskKind } & Judged)[] {
+export function parseSweep(text: string): ({ text: string; kind: AskKind; options: string[] } & Judged)[] {
   return jsonArray(text)
     .filter((o): o is { text: string; kind?: unknown; urgency?: unknown; ignorable?: unknown; blocks?: unknown } => !!o && typeof (o as { text?: unknown }).text === 'string' && (o as { text: string }).text.trim() !== '')
     .map(o => ({
       text: o.text.trim().slice(0, 300),
       kind: KINDS.includes(o.kind as AskKind) ? (o.kind as AskKind) : 'do',
+      options: cleanOptions((o as { options?: unknown }).options),
       ...judged(o),
     }))
     .slice(0, 5)

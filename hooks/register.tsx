@@ -16,7 +16,10 @@ import {
   DbError,
   folderAsks,
   judged,
+  cleanOptions,
+  markDelivered,
   mightHoldAsks,
+  readUndelivered,
   newId,
   parseSweep,
   readOpen,
@@ -50,6 +53,7 @@ Whenever a reply leaves the user something to do, decide or answer, file each on
 Every ask needs your best guess at two things, even when unsure:
 - urgency (time): "now" if it matters today or something is waiting on it right now, "soon" for this week, "later" if there is no clock on it.
 - ignorable: true only if nothing real is tied to it, blocked on it or half done, so it could sit forever without harm. When false, say in blocks what it blocks, is tied to, or what is half done.
+- options: when the user's part is just clicking a button (approve a push or deploy, pick A or B, yes/no), give the 2-3 short button labels, e.g. ["Push", "Not yet"]. Their click comes back to this session as a message; then do what it says.
 Don't file what you will do yourself, and don't file generic offers like "let me know if you want more".
 When the user says they did an item, or answers or decides it, close it with \`${TOOL.resolve}\` (status "done", or "dismissed" when it no longer applies).
 Don't re-file an item that is still open: check \`${TOOL.list}\` (this session's open q's with their ids) when unsure.`
@@ -103,6 +107,7 @@ async function fileAsk(
   kind: AskKind,
   judgement: Judged,
   source: 'tool' | 'sweep',
+  options: string[] = [],
 ): Promise<Ask> {
   const here = await locate($)
   const now = await $.clock.now()
@@ -130,6 +135,9 @@ async function fileAsk(
     ...judgement,
     rank: null,
     triagedAt: null,
+    options,
+    answer: null,
+    deliveredAt: null,
   }
   ask.version = await create($, url, ask)
   await update($, asksAtom, list => [...list.filter(a => a.id !== ask.id), ask])
@@ -139,6 +147,41 @@ async function fileAsk(
 async function resolveAsk($: EngineInterface, ask: Ask, status: 'done' | 'dismissed', by: string) {
   await close($, url, ask, status, by)
   await update($, asksAtom, list => list.filter(a => a.id !== ask.id))
+}
+
+const answerText = (ask: Ask, answer: string) => `Answer to "${ask.text}": ${answer}`
+
+/**
+ * A reply button pressed in this session's pane. The ask closes with the answer; when this
+ * session filed it, the answer goes straight into the conversation, else the filing session
+ * picks it up (deliverAnswers).
+ */
+async function answerAsk($: EngineInterface, ask: Ask, answer: string) {
+  const here = await locate($)
+  const isMine = ask.sessionId === here.sessionId
+  const now = new Date(await $.clock.now()).toISOString()
+  await close($, url, ask, 'done', 'pane', { answer, answeredAt: now, deliveredAt: isMine ? now : null })
+  await update($, asksAtom, list => list.filter(a => a.id !== ask.id))
+  if (isMine) await $.prompt.submit({ text: answerText(ask, answer), asUser: true })
+}
+
+let isDelivering = false
+
+/** Sends answers picked elsewhere (the phone page, another session's pane) into this conversation. */
+async function deliverAnswers($: EngineInterface) {
+  if (isDelivering || (await read($, offAtom))) return
+  isDelivering = true
+  try {
+    const here = await locate($)
+    for (const ask of await readUndelivered($, url, here.sessionId)) {
+      const now = new Date(await $.clock.now()).toISOString()
+      if (!(await markDelivered($, url, ask, now))) continue
+      $.ui.toast(`Answered: ${ask.answer}`)
+      await $.prompt.submit({ text: answerText(ask, ask.answer ?? ''), asUser: true })
+    }
+  } finally {
+    isDelivering = false
+  }
 }
 
 const same = (a: string, b: string) =>
@@ -166,7 +209,7 @@ ${answer.slice(-6000)}
 Already filed and open:
 ${filed || '(none)'}
 
-List each thing this reply leaves the USER to do, decide or answer that is NOT already filed (the same meaning counts as filed). Skip what the assistant will do itself, and generic offers ("let me know if..."). Each item: {"text": short imperative that makes sense on its own (copy in any link, path or command from the reply that the user needs to act on it), "kind": "do" | "decide" | "answer", "urgency": "now" (today, or something waits on it) | "soon" (this week) | "later" (no clock), "ignorable": true only if nothing real is tied to it, blocked on it or half done, "blocks": what it blocks or what is half done ("" when ignorable)}. Always guess urgency and ignorable. Answer with a JSON array only; [] when there is nothing.`
+List each thing this reply leaves the USER to do, decide or answer that is NOT already filed (the same meaning counts as filed). Skip what the assistant will do itself, and generic offers ("let me know if..."). Each item: {"options": 2-3 short button labels when the user's part is just picking or approving (e.g. ["Push", "Not yet"]), else [], "text": short imperative that makes sense on its own (copy in any link, path or command from the reply that the user needs to act on it), "kind": "do" | "decide" | "answer", "urgency": "now" (today, or something waits on it) | "soon" (this week) | "later" (no clock), "ignorable": true only if nothing real is tied to it, blocked on it or half done, "blocks": what it blocks or what is half done ("" when ignorable)}. Always guess urgency and ignorable. Answer with a JSON array only; [] when there is nothing.`
   const r = await $.model.complete({
     model: 'haiku',
     system: SWEEP_SYSTEM,
@@ -183,7 +226,7 @@ List each thing this reply leaves the USER to do, decide or answer that is NOT a
   const mine = sessionAsks(await read($, asksAtom), here)
   for (const item of found) {
     if (mine.some(a => same(a.text, item.text))) continue
-    await fileAsk($, item.text, item.kind, item, 'sweep')
+    await fileAsk($, item.text, item.kind, item, 'sweep', item.options)
   }
   void maybeTriage($, false)
 }
@@ -316,6 +359,13 @@ export const register: Register = (on, rawOptions) => {
             type: 'string',
             description: 'What it blocks, is tied to, or what is half done. Empty when ignorable.',
           },
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            maxItems: 3,
+            description:
+              'Reply buttons when the user\'s part is just picking or approving, e.g. ["Push", "Not yet"]. Their click comes back to this session as a message. Include them whenever there is a simple action to approve.',
+          },
         },
         required: ['text', 'kind', 'urgency', 'ignorable'],
       },
@@ -348,6 +398,9 @@ export const register: Register = (on, rawOptions) => {
       description: "Show the things Claude left for you (q's); /qs done|dismiss <n>, /qs triage, /qs off|on",
       argumentHint: '[done <n> | dismiss <n> | triage | off | on]',
     })
+    // answers picked on the phone page reach this conversation within a minute
+    $.clock.every(60_000, () => void deliverAnswers($).catch(err => fail($, 'delivering answers failed', err)))
+    $.clock.after(5_000, () => void deliverAnswers($).catch(err => fail($, 'delivering answers failed', err)))
     $.clock.every(60_000, () => {
       void $.ui
         .panes()
@@ -387,7 +440,7 @@ export const register: Register = (on, rawOptions) => {
 
   on('tool.call', { tool: MATCH.add }, async ($, e) => {
     if (await read($, offAtom)) return { result: OFF_TEXT }
-    const input = e as unknown as { text?: unknown; kind?: unknown; urgency?: unknown; ignorable?: unknown; blocks?: unknown }
+    const input = e as unknown as { text?: unknown; kind?: unknown; urgency?: unknown; ignorable?: unknown; blocks?: unknown; options?: unknown }
     const text = typeof input.text === 'string' ? input.text.trim() : ''
     const kind: AskKind = input.kind === 'decide' || input.kind === 'answer' ? input.kind : 'do'
     if (!text) return { result: 'Nothing filed: text is empty.' }
@@ -395,7 +448,7 @@ export const register: Register = (on, rawOptions) => {
     const dup = sessionAsks(await read($, asksAtom), here).find(a => same(a.text, text))
     if (dup) return { result: `Already open as ${dup.id}; not filed again.` }
     try {
-      const ask = await fileAsk($, text, kind, judged(input), 'tool')
+      const ask = await fileAsk($, text, kind, judged(input), 'tool', cleanOptions(input.options))
       return { result: `Filed ${ask.id} (${kind}, ${ask.urgency}${ask.ignorable ? ', ignorable' : ''}).` }
     } catch (err) {
       fail($, 'qs_add failed', err)
@@ -536,6 +589,14 @@ export const register: Register = (on, rawOptions) => {
         .join(' · ')
 
     const setTab = (t: AskTab) => () => update($, tabAtom, () => t)
+    const pick = (a: Ask, answer: string) => async () => {
+      try {
+        await answerAsk($, a, answer)
+      } catch (err) {
+        fail($, 'answering from the pane failed', err)
+      }
+      void refreshQuietly($)
+    }
     const act = (a: Ask, status: 'done' | 'dismissed') => async () => {
       try {
         await resolveAsk($, a, status, 'pane')
@@ -573,7 +634,11 @@ export const register: Register = (on, rawOptions) => {
               {[a.ignorable ? 'ignorable' : a.blocks ? `blocks: ${a.blocks}` : '', where(a)].filter(Boolean).join(' · ')}
             </Text>
             <Box flexDirection="row" gap={1}>
-              <Button key={`done:${a.id}`} label="Done" onPress={act(a, 'done')} />
+              {a.options.length > 0 ? (
+                a.options.map((o, i) => <Button key={`answer:${a.id}:${i}`} label={o} variant="primary" onPress={pick(a, o)} />)
+              ) : (
+                <Button key={`done:${a.id}`} label="Done" onPress={act(a, 'done')} />
+              )}
               <Button key={`dismiss:${a.id}`} label="Dismiss" onPress={act(a, 'dismissed')} />
             </Box>
           </Box>

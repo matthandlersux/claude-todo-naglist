@@ -30,6 +30,12 @@ export type Ask = {
   /** Position from the last triage pass (1 = first), null until triaged. */
   rank: number | null
   triagedAt: string | null
+  /** Reply buttons (0-3) when the person's part is just picking one, e.g. ["Push", "Not yet"]. */
+  options: string[]
+  /** The option picked, from the pane or the page; null until answered. */
+  answer: string | null
+  /** When the filing session sent the answer on to its conversation; null until then. */
+  deliveredAt: string | null
 }
 
 /** Where this session is: what the band and the Session/Folder tabs filter on. */

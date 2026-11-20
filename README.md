@@ -1,8 +1,10 @@
-# qs: one list of every q Claude leaves you
+# Todo Nag List
 
-A Claude Code mod. Claude sessions keep leaving you things: something to run, a decision, a question.
-The conversation scrolls, and by the time you deal with item 1, items 2 to 5 are gone. This mod
-files every one of them (a "q") into one list on your claude.ai account and keeps the count in sight.
+Claude is always coming up with things it wants you to do, then scrolls them off the page under more
+output until you lose them; this just keeps track of them.
+
+A Claude Code mod (plugin name `qs`). Every to-do, decision or question a session leaves you (a "q")
+goes into one list on your claude.ai account, with the count kept in sight.
 
 - **Captured as Claude writes.** Claude gets three tools (`qs_add`, `qs_resolve`, `qs_list`) and a
   system-prompt note telling it to file each to-do, decision or question for you, one per item, and to

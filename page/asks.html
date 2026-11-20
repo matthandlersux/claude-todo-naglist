@@ -1,0 +1,189 @@
+<title>Asks for Matt</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one narrow column; a sticky header holds the counts and filters, asks below grouped by folder, then session. */
+:root {
+  --bg: #f6f7f8; --surface: #ffffff; --fg: #1d2329; --muted: #5d6873; --line: #dde2e7;
+  --accent: #1f6f78;
+  --do: #2563a8; --do-bg: #e3edf8; --decide: #9a5b00; --decide-bg: #f8ecd9; --answer: #6b3fa0; --answer-bg: #eee6f7;
+  --font-body: "Atkinson Hyperlegible", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #13171b; --surface: #1b2127; --fg: #e6eaee; --muted: #94a0ab; --line: #2c343c; --accent: #5fb3bc;
+  --do: #8fb9ea; --do-bg: #1d2c3d; --decide: #e9b65c; --decide-bg: #3a2c16; --answer: #c3a2ec; --answer-bg: #2e2340;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #13171b; --surface: #1b2127; --fg: #e6eaee; --muted: #94a0ab; --line: #2c343c; --accent: #5fb3bc;
+  --do: #8fb9ea; --do-bg: #1d2c3d; --decide: #e9b65c; --decide-bg: #3a2c16; --answer: #c3a2ec; --answer-bg: #2e2340;
+  color-scheme: dark }
+html, body { background: var(--bg); color: var(--fg); }
+body { font-family: var(--font-body); font-size: 15px; line-height: 1.45; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+.wrap { max-width: 760px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0 48px; }
+header { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 18px 12px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+h1 { margin: 0; font-size: 22px; text-wrap: balance; }
+.counts { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+.counts b { color: var(--fg); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; }
+select, button { font: inherit; color: var(--fg); }
+select { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; max-width: 100%; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { background: var(--surface); border: 0; padding: 6px 10px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
+main { display: grid; gap: 26px; padding-top: 18px; }
+.folder > h2 { margin: 0 0 8px; font-family: var(--font-mono); font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--accent); }
+.session { display: grid; gap: 6px; margin-bottom: 14px; }
+.session > h3 { margin: 0; font-size: 12px; font-weight: 400; color: var(--muted); font-family: var(--font-mono); }
+ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+li { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: start; }
+li.closed { opacity: .6; }
+li.closed .text { text-decoration: line-through; }
+.kind { font-family: var(--font-mono); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 2px 6px; border-radius: 4px; margin-top: 2px; }
+.kind.do { color: var(--do); background: var(--do-bg); }
+.kind.decide { color: var(--decide); background: var(--decide-bg); }
+.kind.answer { color: var(--answer); background: var(--answer-bg); }
+.text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.meta { grid-column: 2; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.actions { display: flex; gap: 6px; }
+.actions button { background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 13px; cursor: pointer; }
+.actions button:hover { border-color: var(--accent); }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.empty { color: var(--muted); padding: 24px 0; display: grid; gap: 6px; }
+.empty b { color: var(--fg); }
+.err { color: var(--decide); }
+@media (max-width: 480px) { li { grid-template-columns: auto 1fr; } .actions { grid-column: 1 / -1; justify-content: flex-end; } }
+@media (prefers-reduced-motion: no-preference) { li { transition: opacity .2s; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Asks for Matt</h1>
+    <div class="counts" id="counts">Loading…</div>
+    <div class="filters">
+      <select id="folder" aria-label="Folder"><option value="">All folders</option></select>
+      <select id="session" aria-label="Session"><option value="">All sessions</option></select>
+      <div class="seg" role="group" aria-label="Show">
+        <button id="show-open" aria-pressed="true">Open</button>
+        <button id="show-closed" aria-pressed="false">Closed</button>
+      </div>
+    </div>
+  </header>
+  <main id="list">
+    <div class="empty"><b>Nothing here yet.</b>When a Claude Code session with the claude-asks mod leaves you something to do, decide or answer, it shows up here, grouped by folder and session.</div>
+  </main>
+</div>
+
+<script>
+const KINDS = { do: "Do", decide: "Decide", answer: "Answer" };
+let asks = [];
+let filter = { folder: "", session: "", closed: false };
+try { Object.assign(filter, JSON.parse(localStorage.getItem("asks-filter") || "{}")); } catch {}
+const $ = (id) => document.getElementById(id);
+let db = null;
+
+function saveFilter() { try { localStorage.setItem("asks-filter", JSON.stringify(filter)); } catch {} }
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k === "class" ? e.className = v : e.setAttribute(k, v);
+  for (const k of kids) e.append(k);
+  return e;
+}
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+function fillSelect(sel, values, current, allLabel) {
+  sel.replaceChildren(el("option", { value: "" }, allLabel));
+  for (const [v, label] of values) { const o = el("option", { value: v }, label); if (v === current) o.selected = true; sel.append(o); }
+}
+
+function render() {
+  const open = asks.filter(a => a.status === "open");
+  const c = { do: 0, decide: 0, answer: 0 };
+  for (const a of open) c[a.kind] = (c[a.kind] || 0) + 1;
+  $("counts").replaceChildren(
+    el("span", {}, el("b", {}, String(open.length)), " open"),
+    ...Object.keys(KINDS).map(k => el("span", {}, el("b", {}, String(c[k] || 0)), " " + KINDS[k].toLowerCase())));
+
+  const folders = new Map();
+  for (const a of asks) folders.set(a.folder, a.folderName || a.folder);
+  if (filter.folder && !folders.has(filter.folder)) filter.folder = "";
+  fillSelect($("folder"), [...folders].sort((x, y) => x[1].localeCompare(y[1])), filter.folder, "All folders");
+  const sessions = new Map();
+  for (const a of asks) if (!filter.folder || a.folder === filter.folder) sessions.set(a.sessionId, (a.sessionName || a.sessionId.slice(0, 8)) + " · " + when(a.sessionStarted || a.createdAt).split(" ").slice(0, 2).join(" "));
+  if (filter.session && !sessions.has(filter.session)) filter.session = "";
+  fillSelect($("session"), [...sessions], filter.session, "All sessions");
+  $("show-open").setAttribute("aria-pressed", String(!filter.closed));
+  $("show-closed").setAttribute("aria-pressed", String(filter.closed));
+
+  const shown = asks.filter(a => (filter.closed ? a.status !== "open" : a.status === "open")
+    && (!filter.folder || a.folder === filter.folder) && (!filter.session || a.sessionId === filter.session))
+    .sort((x, y) => (filter.closed ? (y.closedAt || "").localeCompare(x.closedAt || "") : (y.createdAt || "").localeCompare(x.createdAt || "")));
+  if (!shown.length) {
+    $("list").replaceChildren(el("div", { class: "empty" }, el("b", {}, filter.closed ? "Nothing closed here yet." : "All clear."),
+      filter.closed ? "Asks you mark done or dismiss move here." : "No open asks for this view. New ones appear here as Claude sessions file them."));
+    return;
+  }
+  const byFolder = new Map();
+  for (const a of shown) {
+    if (!byFolder.has(a.folder)) byFolder.set(a.folder, new Map());
+    const s = byFolder.get(a.folder);
+    if (!s.has(a.sessionId)) s.set(a.sessionId, []);
+    s.get(a.sessionId).push(a);
+  }
+  const out = [];
+  for (const [folder, sess] of byFolder) {
+    const sec = el("section", { class: "folder" }, el("h2", {}, folder));
+    for (const [sid, items] of sess) {
+      const first = items[0];
+      const s = el("div", { class: "session" }, el("h3", {}, (first.sessionName || "session " + sid.slice(0, 8)) + " · started " + when(first.sessionStarted || first.createdAt)));
+      const ul = el("ul");
+      for (const a of items) ul.append(item(a));
+      s.append(ul); sec.append(s);
+    }
+    out.push(sec);
+  }
+  $("list").replaceChildren(...out);
+}
+
+function item(a) {
+  const li = el("li", { class: a.status === "open" ? "" : "closed" });
+  li.append(el("span", { class: "kind " + a.kind }, KINDS[a.kind] || a.kind), el("span", { class: "text" }, a.text || ""));
+  const acts = el("div", { class: "actions" });
+  if (a.status === "open") {
+    acts.append(btn("Done", () => setStatus(a, "done")), btn("Dismiss", () => setStatus(a, "dismissed")));
+  } else acts.append(btn("Reopen", () => setStatus(a, "open")));
+  li.append(acts);
+  const meta = a.status === "open" ? "Asked " + when(a.createdAt) : (a.status === "done" ? "Done " : "Dismissed ") + when(a.closedAt);
+  li.append(el("span", { class: "meta" }, meta));
+  return li;
+}
+function btn(label, fn) { const b = el("button", { type: "button" }, label); b.addEventListener("click", fn); return b; }
+
+async function setStatus(a, status) {
+  if (!db) return;
+  try {
+    await db.collection("asks").doc(a.id).update({ status, closedAt: status === "open" ? null : new Date().toISOString(), closedBy: status === "open" ? null : "page" });
+  } catch (e) { $("counts").replaceChildren(el("span", { class: "err" }, "Couldn't save that change: " + (e && e.message || e) + ". Try again.")); }
+}
+
+$("folder").addEventListener("change", e => { filter.folder = e.target.value; filter.session = ""; saveFilter(); render(); });
+$("session").addEventListener("change", e => { filter.session = e.target.value; saveFilter(); render(); });
+$("show-open").addEventListener("click", () => { filter.closed = false; saveFilter(); render(); });
+$("show-closed").addEventListener("click", () => { filter.closed = true; saveFilter(); render(); });
+
+(async () => {
+  const timer = setTimeout(() => $("counts").textContent = "Still connecting to your list…", 10000);
+  db = await window.claude?.use?.("db");
+  if (!db) { clearTimeout(timer); $("counts").textContent = "Open this page signed in to Claude to see your asks."; return; }
+  db.collection("asks").onSnapshot(snap => {
+    clearTimeout(timer);
+    asks = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(a => a.text);
+    render();
+  }, err => { clearTimeout(timer); $("counts").replaceChildren(el("span", { class: "err" }, "Couldn't load your asks (" + err.code + "). Reload the page to try again.")); });
+})();
+</script>

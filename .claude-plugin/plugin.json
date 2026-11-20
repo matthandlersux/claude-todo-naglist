@@ -1,0 +1,24 @@
+{
+  "name": "asks",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Captures every to-do, decision and question a Claude session leaves for you into one list on your claude.ai account, and keeps it visible above the prompt.",
+  "author": { "name": "Matt Handler" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "artifactUrl": {
+      "type": "string",
+      "title": "Asks page URL",
+      "description": "The claude.ai artifact whose database holds the asks (collection 'asks').",
+      "default": "https://claude.ai/artifact/HNv6tEtKy3rXX2QzkVqRHs",
+      "required": false
+    },
+    "sweep": {
+      "type": "boolean",
+      "title": "Safety-net sweep",
+      "description": "After each reply, a cheap model call looks for asks Claude forgot to file.",
+      "default": true,
+      "required": false
+    }
+  }
+}

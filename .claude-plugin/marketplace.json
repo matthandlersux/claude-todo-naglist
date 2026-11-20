@@ -1,0 +1,6 @@
+{
+  "name": "claude-asks",
+  "description": "The asks mod: keeps the things Claude sessions leave for you in one list.",
+  "owner": { "name": "Matt Handler" },
+  "plugins": [{ "name": "asks", "source": "./", "description": "Keeps the things Claude asks of you in one list." }]
+}

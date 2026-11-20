@@ -47,7 +47,7 @@ const TOOL = {
 } as const
 
 const PROMPT_SECTION = `# Asks for the user (asks mod)
-Whenever a reply leaves the user something to do, decide or answer, file each one with the \`${TOOL.add}\` tool as part of that reply: one call per item, kind "do", "decide" or "answer", and a short imperative text that makes sense on its own, away from this conversation (name the repo, file, server or thing it is about).
+Whenever a reply leaves the user something to do, decide or answer, file each one with the \`${TOOL.add}\` tool as part of that reply: one call per item, kind "do", "decide" or "answer", and a short imperative text that makes sense on its own, away from this conversation (name the repo, file, server or thing it is about, and copy in any link, path or command the user needs to act on it).
 Every ask needs your best guess at two things, even when unsure:
 - urgency (time): "now" if it matters today or something is waiting on it right now, "soon" for this week, "later" if there is no clock on it.
 - ignorable: true only if nothing real is tied to it, blocked on it or half done, so it could sit forever without harm. When false, say in blocks what it blocks, is tied to, or what is half done.
@@ -167,7 +167,7 @@ ${answer.slice(-6000)}
 Already filed and open:
 ${filed || '(none)'}
 
-List each thing this reply leaves the USER to do, decide or answer that is NOT already filed (the same meaning counts as filed). Skip what the assistant will do itself, and generic offers ("let me know if..."). Each item: {"text": short imperative that makes sense on its own, "kind": "do" | "decide" | "answer", "urgency": "now" (today, or something waits on it) | "soon" (this week) | "later" (no clock), "ignorable": true only if nothing real is tied to it, blocked on it or half done, "blocks": what it blocks or what is half done ("" when ignorable)}. Always guess urgency and ignorable. Answer with a JSON array only; [] when there is nothing.`
+List each thing this reply leaves the USER to do, decide or answer that is NOT already filed (the same meaning counts as filed). Skip what the assistant will do itself, and generic offers ("let me know if..."). Each item: {"text": short imperative that makes sense on its own (copy in any link, path or command from the reply that the user needs to act on it), "kind": "do" | "decide" | "answer", "urgency": "now" (today, or something waits on it) | "soon" (this week) | "later" (no clock), "ignorable": true only if nothing real is tied to it, blocked on it or half done, "blocks": what it blocks or what is half done ("" when ignorable)}. Always guess urgency and ignorable. Answer with a JSON array only; [] when there is nothing.`
   const r = await $.model.complete({
     model: 'haiku',
     system: SWEEP_SYSTEM,

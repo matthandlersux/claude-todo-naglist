@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { bandText, parseDocs } from '../hooks/db'
+import { bandText, byPriority, parseDocs, triageChanges, triageDue } from '../hooks/db'
 import type { Ask } from '../types'
 
 const URL = 'https://claude.ai/artifact/HNv6tEtKy3rXX2QzkVqRHs'
@@ -58,10 +58,26 @@ async function start($: Engine) {
   await $.session.start({ cwd: '/home/m/repo/sub', surface: 'terminal', isInteractive: true })
 }
 
+const base = {
+  version: 1,
+  status: 'open',
+  folder: '/r',
+  folderName: 'r',
+  sessionName: '',
+  sessionStarted: '',
+  closedAt: null,
+  closedBy: null,
+  source: 'tool',
+  urgency: 'soon',
+  ignorable: false,
+  blocks: '',
+  rank: null,
+  triagedAt: null,
+} as const
+
 const composeArgs = { model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] }
 
 test('band text counts this session, by kind, with the folder total', () => {
-  const base = { version: 1, status: 'open', folder: '/r', folderName: 'r', sessionName: '', sessionStarted: '', closedAt: null, closedBy: null, source: 'tool' } as const
   const asks: Ask[] = [
     { ...base, id: 'a', text: 'x', kind: 'do', sessionId: 's1', createdAt: '2026-11-19T01:00:00Z' },
     { ...base, id: 'b', text: 'y', kind: 'decide', sessionId: 's1', createdAt: '2026-11-19T02:00:00Z' },
@@ -69,6 +85,41 @@ test('band text counts this session, by kind, with the folder total', () => {
   ]
   expect(bandText(asks, { sessionId: 's1', folder: '/r' })).toBe('2 open for you · 1 do · 1 decide   (3 in this folder)   /asks')
   expect(bandText(asks, { sessionId: 's9', folder: '/r' })).toBe('')
+  expect(bandText([{ ...asks[0]!, urgency: 'now' }, asks[1]!], { sessionId: 's1', folder: '/r' })).toMatch(/^2 open for you · 1 now · 1 do/)
+})
+
+test('priority: urgency, then not ignorable, then untriaged, then rank, then newest', () => {
+  const a = (id: string, o: Partial<Ask>): Ask => ({ ...base, id, text: id, kind: 'do', sessionId: 's', createdAt: '2026-11-19T01:00:00Z', ...o })
+  const list = [
+    a('later', { urgency: 'later', rank: 1, triagedAt: 'x' }),
+    a('soon-ignorable', { ignorable: true, rank: 1, triagedAt: 'x' }),
+    a('soon-rank2', { rank: 2, triagedAt: 'x' }),
+    a('soon-new', {}),
+    a('soon-rank1', { rank: 1, triagedAt: 'x' }),
+    a('now', { urgency: 'now', rank: 9, triagedAt: 'x' }),
+  ]
+  expect([...list].sort(byPriority).map(x => x.id)).toEqual(['now', 'soon-new', 'soon-rank1', 'soon-rank2', 'soon-ignorable', 'later'])
+})
+
+test('triage: ranks by position, writes only changes, skips unknown ids; due rules', () => {
+  const a = (id: string, o: Partial<Ask>): Ask => ({ ...base, id, text: id, kind: 'do', sessionId: 's', createdAt: '2026-11-19T01:00:00Z', ...o })
+  const open = [a('x', { rank: 1, triagedAt: 't' }), a('y', {})]
+  const reply = 'Here: [{"id":"y","urgency":"now","ignorable":false,"blocks":"deploy"},{"id":"zz"},{"id":"x","urgency":"soon","ignorable":false,"blocks":""}]'
+  const changes = triageChanges(reply, open, 'NOW')
+  expect(changes.map(c => [c.ask.id, c.data.rank, c.data.urgency])).toEqual([
+    ['y', 1, 'now'],
+    ['x', 2, 'soon'],
+  ])
+  expect(changes[0]?.data.blocks).toBe('deploy')
+
+  const now = Date.parse('2026-11-19T12:00:00Z')
+  const ago = (min: number) => new Date(now - min * 60_000).toISOString()
+  expect(triageDue(open, null, now)).toBe(true)
+  expect(triageDue([], null, now)).toBe(false)
+  expect(triageDue(open, { lastRun: ago(30), runningUntil: '' }, now)).toBe(true) // y is new
+  expect(triageDue([open[0]!], { lastRun: ago(30), runningUntil: '' }, now)).toBe(false)
+  expect(triageDue([open[0]!], { lastRun: ago(7 * 60), runningUntil: '' }, now)).toBe(true)
+  expect(triageDue(open, { lastRun: ago(7 * 60), runningUntil: ago(-5) }, now)).toBe(false)
 })
 
 test('parses the documents between the db markers', () => {
@@ -85,8 +136,15 @@ test('asks_add writes a set through ArtifactData and the band shows it', async (
   const calls = engine(on, okDb)
   await start($)
 
-  const ran = await $.tool.call({ tool: 'mcp__asks__asks_add', text: 'Rotate the API key on sodium', kind: 'do' })
-  expect(ran.text ?? String(ran.result)).toMatch(/^Filed a-/)
+  const ran = await $.tool.call({
+    tool: 'mcp__asks__asks_add',
+    text: 'Rotate the API key on sodium',
+    kind: 'do',
+    urgency: 'now',
+    ignorable: false,
+    blocks: 'the deploy',
+  })
+  expect(ran.text ?? String(ran.result)).toMatch(/^Filed a-.* \(do, now\)/)
 
   const set = calls.find(c => c.action === 'set')
   expect(set?.url).toBe(URL)
@@ -100,10 +158,14 @@ test('asks_add writes a set through ArtifactData and the band shows it', async (
   expect(set?.data?.sessionId).toBe('sess-1')
   expect(set?.data?.source).toBe('tool')
   expect(set?.data?.sessionStarted).toBe('2026-11-19T11:00:00.000Z')
+  expect(set?.data?.urgency).toBe('now')
+  expect(set?.data?.ignorable).toBe(false)
+  expect(set?.data?.blocks).toBe('the deploy')
+  expect(set?.data?.rank).toBeNull()
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect((await ui.find({ key: 'asks-band' }))?.text).toMatch(/^1 open for you · 1 do/)
+    expect((await ui.find({ key: 'asks-band' }))?.text).toMatch(/^1 open for you · 1 now · 1 do/)
     await ui.unmount()
   }
 
@@ -174,11 +236,47 @@ test('the pane lists the ask with its number and Done closes it, on every surfac
       requestId: 'asks',
       props: { title: 'Asks', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 30 }, view: {} },
     })
-    expect(await ui.find({ type: 'Text', text: /1\. \[do\] Check the backup/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /1\. soon \[do\] Check the backup/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /HNv6tEtKy3rXX2QzkVqRHs/ })).toBeDefined()
     await ui.press({ key: `done:${id}` })
     expect(calls.filter(c => c.action === 'update').at(-1)?.data?.closedBy).toBe('pane')
     expect(await ui.find({ type: 'Text', text: /Nothing open here/ })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('/asks triage claims the meta doc, batches the new order with version pins, then releases', async ($, on) => {
+  const calls = engine(on, e => {
+    if (e.action === 'query') {
+      return {
+        text: [
+          '=== BEGIN ARTIFACT DB asks ===',
+          '{"id":"a1","data":{"text":"Old thing","kind":"do","status":"open","urgency":"later","rank":1,"triagedAt":"t","createdAt":"2026-11-18T00:00:00Z"},"version":7}',
+          '{"id":"a2","data":{"text":"Approve the deploy","kind":"decide","status":"open","createdAt":"2026-11-19T11:50:00Z"},"version":2}',
+          '=== END ARTIFACT DB asks ===',
+        ].join('\n'),
+      }
+    }
+    if (e.action === 'batch') return { text: 'Batch applied: 2 writes.' }
+    return okDb(e)
+  })
+  on('model.complete', () => ({ value: {
+    isAnswered: true,
+    text: '[{"id":"a2","urgency":"now","ignorable":false,"blocks":"the release"},{"id":"a1","urgency":"later","ignorable":true,"blocks":""}]',
+  } }) as never)
+  await start($)
+
+  const out = await $.command.run({ command: 'asks', args: 'triage', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+  expect(out.text).toBe('Triaged 2 asks; 2 changed.')
+  const metaWrites = calls.filter(c => c.collection === 'asksMeta' && c.action !== 'get')
+  expect(metaWrites.length).toBe(2)
+  expect(String(metaWrites[0]?.data?.runningUntil)).not.toBe('')
+  expect(metaWrites[1]?.data?.runningUntil).toBe('')
+  const batch = calls.find(c => c.action === 'batch') as unknown as { collection?: string; writes: { doc_id: string; if_version: number; collection: string; data: Record<string, unknown> }[] }
+  expect(batch.collection).toBeUndefined()
+  expect(batch.writes.map(w => [w.doc_id, w.if_version, w.data.rank, w.collection])).toEqual([
+    ['a2', 2, 1, 'asks'],
+    ['a1', 7, 2, 'asks'],
+  ])
+  expect(batch.writes[1]?.data.ignorable).toBe(true)
 })

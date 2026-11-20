@@ -5,18 +5,27 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Ask, AskHere, AskKind, AskTab } from '../types'
+import type { Judged } from './db'
 import {
   age,
+  allAsks,
   bandText,
   baseName,
   close,
   create,
+  DbError,
   folderAsks,
+  judged,
   mightHoldAsks,
   newId,
   parseSweep,
   readOpen,
+  readTriageMeta,
   sessionAsks,
+  triageChanges,
+  triageDue,
+  writeTriage,
+  writeTriageMeta,
 } from './db'
 
 const PLUGIN = 'asks'
@@ -38,7 +47,11 @@ const TOOL = {
 } as const
 
 const PROMPT_SECTION = `# Asks for the user (asks mod)
-Whenever a reply leaves the user something to do, decide or answer, file each one with the \`${TOOL.add}\` tool as part of that reply: one call per item, kind "do", "decide" or "answer", and a short imperative text that makes sense on its own, away from this conversation (name the repo, file, server or thing it is about). Don't file what you will do yourself, and don't file generic offers like "let me know if you want more".
+Whenever a reply leaves the user something to do, decide or answer, file each one with the \`${TOOL.add}\` tool as part of that reply: one call per item, kind "do", "decide" or "answer", and a short imperative text that makes sense on its own, away from this conversation (name the repo, file, server or thing it is about).
+Every ask needs your best guess at two things, even when unsure:
+- urgency (time): "now" if it matters today or something is waiting on it right now, "soon" for this week, "later" if there is no clock on it.
+- ignorable: true only if nothing real is tied to it, blocked on it or half done, so it could sit forever without harm. When false, say in blocks what it blocks, is tied to, or what is half done.
+Don't file what you will do yourself, and don't file generic offers like "let me know if you want more".
 When the user says they did an item, or answers or decides it, close it with \`${TOOL.resolve}\` (status "done", or "dismissed" when it no longer applies).
 Don't re-file an item that is still open: check \`${TOOL.list}\` (this session's open asks with their ids) when unsure.`
 
@@ -85,7 +98,13 @@ async function refresh($: EngineInterface): Promise<Ask[]> {
 
 const refreshQuietly = ($: EngineInterface) => refresh($).catch(err => fail($, 'refresh failed', err))
 
-async function fileAsk($: EngineInterface, text: string, kind: AskKind, source: 'tool' | 'sweep'): Promise<Ask> {
+async function fileAsk(
+  $: EngineInterface,
+  text: string,
+  kind: AskKind,
+  judgement: Judged,
+  source: 'tool' | 'sweep',
+): Promise<Ask> {
   const here = await locate($)
   const now = await $.clock.now()
   let started = ''
@@ -109,6 +128,9 @@ async function fileAsk($: EngineInterface, text: string, kind: AskKind, source: 
     closedAt: null,
     closedBy: null,
     source,
+    ...judgement,
+    rank: null,
+    triagedAt: null,
   }
   ask.version = await create($, url, ask)
   await update($, asksAtom, list => [...list.filter(a => a.id !== ask.id), ask])
@@ -145,12 +167,12 @@ ${answer.slice(-6000)}
 Already filed and open:
 ${filed || '(none)'}
 
-List each thing this reply leaves the USER to do, decide or answer that is NOT already filed (the same meaning counts as filed). Skip what the assistant will do itself, and generic offers ("let me know if..."). Each item: {"text": short imperative that makes sense on its own, "kind": "do" | "decide" | "answer"}. Answer with a JSON array only; [] when there is nothing.`
+List each thing this reply leaves the USER to do, decide or answer that is NOT already filed (the same meaning counts as filed). Skip what the assistant will do itself, and generic offers ("let me know if..."). Each item: {"text": short imperative that makes sense on its own, "kind": "do" | "decide" | "answer", "urgency": "now" (today, or something waits on it) | "soon" (this week) | "later" (no clock), "ignorable": true only if nothing real is tied to it, blocked on it or half done, "blocks": what it blocks or what is half done ("" when ignorable)}. Always guess urgency and ignorable. Answer with a JSON array only; [] when there is nothing.`
   const r = await $.model.complete({
     model: 'haiku',
     system: SWEEP_SYSTEM,
     prompt,
-    maxTokens: 500,
+    maxTokens: 800,
     effort: 'low',
     timeoutMs: 45_000,
   })
@@ -162,7 +184,93 @@ List each thing this reply leaves the USER to do, decide or answer that is NOT a
   const mine = sessionAsks(await read($, asksAtom), here)
   for (const item of found) {
     if (mine.some(a => same(a.text, item.text))) continue
-    await fileAsk($, item.text, item.kind, 'sweep')
+    await fileAsk($, item.text, item.kind, item, 'sweep')
+  }
+  void maybeTriage($, false)
+}
+
+// ---- triage: re-rank every open ask across the account ----------------------
+
+const TRIAGE_SYSTEM =
+  'You keep one person\'s list of open asks (things AI sessions left them to do, decide or answer) in priority order. You answer with a JSON array only.'
+const TRIAGE_LIMIT = 150
+let isTriaging = false
+
+/** Runs a triage pass when one is due (or `force`), claiming the shared doc so only one session runs it. */
+async function maybeTriage($: EngineInterface, force: boolean): Promise<string> {
+  if (isTriaging) return 'A triage pass is already running in this session.'
+  if (await read($, offAtom)) return OFF_TEXT
+  isTriaging = true
+  try {
+    const open = await refresh($)
+    const now = await $.clock.now()
+    const meta = await readTriageMeta($, url)
+    if (open.length === 0) return 'Nothing open to triage.'
+    if (meta && Date.parse(meta.runningUntil) > now) return 'Another session is triaging right now.'
+    if (!force && !triageDue(open, meta, now)) return 'Not due.'
+    const nowIso = new Date(now).toISOString()
+    // the claim: a conflict here means another session got there first
+    try {
+      await writeTriageMeta($, url, meta, {
+        lastRun: meta?.lastRun ?? '',
+        runningUntil: new Date(now + 10 * 60_000).toISOString(),
+      })
+    } catch (err) {
+      if (err instanceof DbError && err.isConflict) return 'Another session started a triage pass first.'
+      throw err
+    }
+    const list = allAsks(open).slice(0, TRIAGE_LIMIT)
+    if (open.length > TRIAGE_LIMIT) $.ui.log(`${PLUGIN}: triage left out ${open.length - TRIAGE_LIMIT} asks past the first ${TRIAGE_LIMIT}`, { to: 'debug' })
+    const lines = list.map(a =>
+      JSON.stringify({
+        id: a.id,
+        text: a.text,
+        kind: a.kind,
+        urgency: a.urgency,
+        ignorable: a.ignorable,
+        blocks: a.blocks,
+        asked: a.createdAt.slice(0, 16),
+        where: [a.folderName, a.sessionName].filter(Boolean).join(' / '),
+        triaged: a.triagedAt !== null,
+      }),
+    )
+    const prompt = `Now: ${nowIso}
+
+Open asks, one JSON object per line (current guesses; "triaged": false means new since the last pass):
+${lines.join('\n')}
+
+Re-judge each ask and put the whole list in the order the person should deal with them, most important first:
+- urgency is about time: "now" if it matters today or something is waiting on it right now, "soon" for this week, "later" if there is no clock. Dates in the text and the ask's age count: a deadline coming closer moves it up.
+- ignorable is about consequence: true only if nothing real is tied to it, blocked on it or half done, so it could sit forever without harm. Half-done work and anything blocking other work is never ignorable.
+- blocks: what it blocks, is tied to, or what is half done ("" when ignorable).
+- New asks that matter more than older ones go above them.
+Answer with a JSON array of every id, in order: [{"id", "urgency", "ignorable", "blocks"}].`
+    const r = await $.model.complete({
+      model: 'sonnet',
+      system: TRIAGE_SYSTEM,
+      prompt,
+      maxTokens: 120 * list.length + 200,
+      effort: 'low',
+      timeoutMs: 180_000,
+    })
+    let changed = 0
+    if (r.isAnswered) {
+      // asks closed or edited since the read fail their version pin; the next pass gets them
+      const changes = triageChanges(r.text, list, nowIso)
+      changed = changes.length
+      await writeTriage($, url, changes).catch(err => fail($, 'triage write failed', err))
+    } else {
+      $.ui.log(`${PLUGIN}: triage got no answer (${r.reason})`, { to: 'debug' })
+    }
+    const after = await readTriageMeta($, url)
+    await writeTriageMeta($, url, after, { lastRun: r.isAnswered ? nowIso : (meta?.lastRun ?? ''), runningUntil: '' })
+    await refresh($)
+    return r.isAnswered ? `Triaged ${list.length} asks; ${changed} changed.` : `Triage got no answer (${r.reason}).`
+  } catch (err) {
+    fail($, 'triage failed', err)
+    return `Triage failed: ${err instanceof Error ? err.message : String(err)}`
+  } finally {
+    isTriaging = false
   }
 }
 
@@ -196,8 +304,21 @@ export const register: Register = (on, rawOptions) => {
         properties: {
           text: { type: 'string', description: 'Short imperative, self-contained (names the thing it is about).' },
           kind: { type: 'string', enum: ['do', 'decide', 'answer'] },
+          urgency: {
+            type: 'string',
+            enum: ['now', 'soon', 'later'],
+            description: 'Time: now (today, or something waits on it), soon (this week), later (no clock). Always guess.',
+          },
+          ignorable: {
+            type: 'boolean',
+            description: 'True only if nothing real is tied to it, blocked on it or half done. Always guess.',
+          },
+          blocks: {
+            type: 'string',
+            description: 'What it blocks, is tied to, or what is half done. Empty when ignorable.',
+          },
         },
-        required: ['text', 'kind'],
+        required: ['text', 'kind', 'urgency', 'ignorable'],
       },
       isDeferred: false,
     })
@@ -225,8 +346,8 @@ export const register: Register = (on, rawOptions) => {
     })
     await $.command.register({
       name: 'asks',
-      description: 'Show the things Claude left for you (asks); /asks done|dismiss <n>, /asks off|on',
-      argumentHint: '[done <n> | dismiss <n> | off | on]',
+      description: 'Show the things Claude left for you (asks); /asks done|dismiss <n>, /asks triage, /asks off|on',
+      argumentHint: '[done <n> | dismiss <n> | triage | off | on]',
     })
     $.clock.every(60_000, () => {
       void $.ui
@@ -235,6 +356,9 @@ export const register: Register = (on, rawOptions) => {
         .catch(err => fail($, 'timed refresh failed', err))
     })
     $.clock.after(0, () => void refreshQuietly($))
+    // the re-ranking pass: checked every 30 minutes, runs when due (see triageDue)
+    $.clock.every(30 * 60_000, () => void maybeTriage($, false))
+    $.clock.after(60_000, () => void maybeTriage($, false))
     return next(e)
   })
 
@@ -264,7 +388,7 @@ export const register: Register = (on, rawOptions) => {
 
   on('tool.call', { tool: 'mcp__asks__asks_add' }, async ($, e) => {
     if (await read($, offAtom)) return { result: OFF_TEXT }
-    const input = e as unknown as { text?: unknown; kind?: unknown }
+    const input = e as unknown as { text?: unknown; kind?: unknown; urgency?: unknown; ignorable?: unknown; blocks?: unknown }
     const text = typeof input.text === 'string' ? input.text.trim() : ''
     const kind: AskKind = input.kind === 'decide' || input.kind === 'answer' ? input.kind : 'do'
     if (!text) return { result: 'Nothing filed: text is empty.' }
@@ -272,8 +396,8 @@ export const register: Register = (on, rawOptions) => {
     const dup = sessionAsks(await read($, asksAtom), here).find(a => same(a.text, text))
     if (dup) return { result: `Already open as ${dup.id}; not filed again.` }
     try {
-      const ask = await fileAsk($, text, kind, 'tool')
-      return { result: `Filed ${ask.id} (${kind}).` }
+      const ask = await fileAsk($, text, kind, judged(input), 'tool')
+      return { result: `Filed ${ask.id} (${kind}, ${ask.urgency}${ask.ignorable ? ', ignorable' : ''}).` }
     } catch (err) {
       fail($, 'asks_add failed', err)
       return { result: `Could not file it: ${err instanceof Error ? err.message : String(err)}` }
@@ -310,13 +434,16 @@ export const register: Register = (on, rawOptions) => {
     const here = await read($, hereAtom)
     const shown =
       scope === 'all'
-        ? [...open].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        ? allAsks(open)
         : scope === 'folder'
           ? folderAsks(open, here)
           : sessionAsks(open, here)
     if (shown.length === 0) return { result: 'No open asks.' }
     const lines = shown.map(
-      a => `${a.id} · ${a.kind} · ${a.text}${scope === 'session' || scope === undefined ? '' : ` (${a.folderName || a.folder})`}`,
+      a =>
+        `${a.id} · ${a.urgency}${a.ignorable ? ' · ignorable' : ''} · ${a.kind} · ${a.text}` +
+        (a.blocks ? ` [blocks: ${a.blocks}]` : '') +
+        (scope === 'session' || scope === undefined ? '' : ` (${a.folderName || a.folder})`),
     )
     return { result: lines.join('\n') }
   }).catch(() => ({ result: 'The asks tool failed; see the debug log.' }))
@@ -370,7 +497,8 @@ export const register: Register = (on, rawOptions) => {
         return { text: `Could not change it: ${err instanceof Error ? err.message : String(err)}` }
       }
     }
-    return { text: 'Usage: /asks  |  /asks done <n>  |  /asks dismiss <n>  |  /asks off  |  /asks on' }
+    if (verb === 'triage') return { text: await maybeTriage($, true) }
+    return { text: 'Usage: /asks  |  /asks done <n>  |  /asks dismiss <n>  |  /asks triage  |  /asks off  |  /asks on' }
   })
 
   // ---- the band above the prompt ---------------------------------------------
@@ -402,21 +530,11 @@ export const register: Register = (on, rawOptions) => {
 
     const mine = sessionAsks(asks, here)
     const numbers = new Map(mine.map((a, i) => [a.id, i + 1]))
-    const shown =
-      tab === 'session'
-        ? mine
-        : tab === 'folder'
-          ? folderAsks(asks, here)
-          : [...asks].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-
-    const groups = new Map<string, Map<string, Ask[]>>()
-    for (const a of shown) {
-      const byFolder = groups.get(a.folder) ?? new Map<string, Ask[]>()
-      groups.set(a.folder, byFolder)
-      const list = byFolder.get(a.sessionId) ?? []
-      byFolder.set(a.sessionId, list)
-      list.push(a)
-    }
+    const shown = tab === 'session' ? mine : tab === 'folder' ? folderAsks(asks, here) : allAsks(asks)
+    const where = (a: Ask) =>
+      [tab === 'all' ? a.folderName || a.folder : '', a.sessionId === here?.sessionId ? 'this session' : a.sessionName || `session ${a.sessionId.slice(0, 8)}`]
+        .filter(Boolean)
+        .join(' · ')
 
     const setTab = (t: AskTab) => () => update($, tabAtom, () => t)
     const act = (a: Ask, status: 'done' | 'dismissed') => async () => {
@@ -442,29 +560,22 @@ export const register: Register = (on, rawOptions) => {
         {isOff && <Text dimColor>Capture is off in this session (/asks on).</Text>}
         {error !== '' && <Text color="red">{error}</Text>}
         {shown.length === 0 && <Text dimColor>Nothing open here.</Text>}
-        {[...groups].map(([folder, sessions]) => (
+        {shown.map(a => (
           <Box flexDirection="column" marginTop={1}>
-            <Text bold>{folder || '(no folder)'}</Text>
-            {[...sessions].map(([sid, items]) => (
-              <Box flexDirection="column">
-                <Text dimColor>
-                  {sid === here?.sessionId ? 'this session' : items[0]?.sessionName || `session ${sid.slice(0, 8)}`}
-                </Text>
-                {items.map(a => (
-                  <Box flexDirection="column">
-                    <Text wrap="wrap">
-                      {numbers.has(a.id) ? `${numbers.get(a.id)}. ` : '   '}
-                      <Text color={a.kind === 'do' ? 'cyan' : a.kind === 'decide' ? 'magenta' : 'yellow'}>[{a.kind}]</Text>{' '}
-                      {a.text} <Text dimColor>{age(a.createdAt, now)}</Text>
-                    </Text>
-                    <Box flexDirection="row" gap={1}>
-                      <Button key={`done:${a.id}`} label="Done" onPress={act(a, 'done')} />
-                      <Button key={`dismiss:${a.id}`} label="Dismiss" onPress={act(a, 'dismissed')} />
-                    </Box>
-                  </Box>
-                ))}
-              </Box>
-            ))}
+            <Text wrap="wrap" dimColor={a.ignorable}>
+              {numbers.has(a.id) ? `${numbers.get(a.id)}. ` : '   '}
+              <Text color={a.urgency === 'now' ? 'red' : a.urgency === 'soon' ? 'yellow' : 'gray'}>{a.urgency}</Text>{' '}
+              <Text color={a.kind === 'do' ? 'cyan' : a.kind === 'decide' ? 'magenta' : 'yellow'}>[{a.kind}]</Text>{' '}
+              {a.text} <Text dimColor>{age(a.createdAt, now)}</Text>
+            </Text>
+            <Text dimColor wrap="wrap">
+              {'   '}
+              {[a.ignorable ? 'ignorable' : a.blocks ? `blocks: ${a.blocks}` : '', where(a)].filter(Boolean).join(' · ')}
+            </Text>
+            <Box flexDirection="row" gap={1}>
+              <Button key={`done:${a.id}`} label="Done" onPress={act(a, 'done')} />
+              <Button key={`dismiss:${a.id}`} label="Dismiss" onPress={act(a, 'dismissed')} />
+            </Box>
           </Box>
         ))}
         <Box marginTop={1}>

@@ -7,14 +7,22 @@ files every one of them into one list on your claude.ai account and keeps the co
 - **Captured as Claude writes.** Claude gets three tools (`asks_add`, `asks_resolve`, `asks_list`) and a
   system-prompt note telling it to file each to-do, decision or question for you, one per item, and to
   close items when you say you did them or answer them.
+- **Every ask is judged.** Claude must guess two things when it files one: **urgency** (time: `now` = today
+  or something waits on it, `soon` = this week, `later` = no clock) and **ignorable** (true only if nothing
+  real is tied to it, blocked on it or half done), plus what it blocks.
+- **Re-ranked as things change.** A triage pass (sonnet) re-judges every open ask across all your sessions
+  and folders and puts them in order: every 6 hours, or 20 minutes after the last pass when new asks are
+  waiting. New asks sort to the top of their urgency until a pass places them. Only one session runs a pass
+  at a time (a claim doc in collection `asksMeta`). `/asks triage` runs one now.
 - **Safety net.** After each longer reply a cheap model call (haiku) checks for asks Claude forgot to file
   and adds them (marked `sweep`). It never holds up the turn. Can be switched off.
 - **Always visible.** A line above the prompt: `3 open for you · 1 do · 1 decide · 1 answer   (7 in this folder)   /asks`.
   Nothing shows when there are none.
-- **A pane** (`/asks`): Session / Folder / All tabs, grouped by folder then session, newest first,
-  with Done and Dismiss buttons.
+- **A pane** (`/asks`): Session / Folder / All tabs, in priority order (urgency, then not-ignorable, then the
+  last triage's rank), with Done and Dismiss buttons.
 - **Your phone.** The list lives in the database of a private claude.ai page:
   https://claude.ai/artifact/HNv6tEtKy3rXX2QzkVqRHs. Open it anywhere you're signed in to Claude, tick things off there.
+  Priority order by default, or grouped by folder.
 
 ## Install
 
@@ -37,8 +45,9 @@ the normal permission check. The first time, you'll be asked: choose to always a
 | Command | What it does |
 |---|---|
 | `/asks` | Open the pane |
-| `/asks done <n>` | Mark this session's item number `n` done (numbers as the pane shows them, newest first) |
+| `/asks done <n>` | Mark this session's item number `n` done (numbers as the pane shows them, in priority order) |
 | `/asks dismiss <n>` | Dismiss item `n` |
+| `/asks triage` | Re-rank every open ask now |
 | `/asks off` | Stop capturing in this session: no prompt note, no sweep, no band; the tools answer that capture is off |
 | `/asks on` | Turn it back on (on is the default) |
 
@@ -54,7 +63,9 @@ the normal permission check. The first time, you'll be asked: choose to always a
 One document per ask in the page's `asks` collection: `text`, `kind` (do/decide/answer), `status`
 (open/done/dismissed), `folder` (the git root, else the working directory), `folderName`, `sessionId`,
 `sessionName` (the session's title when Claude Code reports one), `sessionStarted`, `createdAt`,
-`closedAt`, `closedBy` (session/pane/page), `source` (tool/sweep). The database is the truth; the
+`closedAt`, `closedBy` (session/pane/page), `source` (tool/sweep), `urgency` (now/soon/later),
+`ignorable`, `blocks`, `rank` (the last triage's position, null until triaged), `triagedAt`.
+Collection `asksMeta`, doc `triage`: `lastRun`, `runningUntil` (the claim). The database is the truth; the
 session keeps a cache of the open ones, refreshed when the pane opens, after each write, at the start
 and end of every turn, and every minute while the pane is open.
 

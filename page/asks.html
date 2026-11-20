@@ -3,21 +3,23 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Layout: one narrow column; a sticky header holds the counts and filters, asks below grouped by folder, then session. */
+/* Layout: one narrow column; a sticky header holds the counts and filters, asks below in priority order (or grouped by folder, then session). */
 :root {
   --bg: #f6f7f8; --surface: #ffffff; --fg: #1d2329; --muted: #5d6873; --line: #dde2e7;
   --accent: #1f6f78;
-  --do: #2563a8; --do-bg: #e3edf8; --decide: #9a5b00; --decide-bg: #f8ecd9; --answer: #6b3fa0; --answer-bg: #eee6f7;
+  --do: #2563a8; --do-bg: #e3edf8; --decide: #9a5b00; --decide-bg: #f8ecd9; --answer: #6b3fa0; --answer-bg: #eee6f7; --now: #b42318;
   --font-body: "Atkinson Hyperlegible", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --bg: #13171b; --surface: #1b2127; --fg: #e6eaee; --muted: #94a0ab; --line: #2c343c; --accent: #5fb3bc;
   --do: #8fb9ea; --do-bg: #1d2c3d; --decide: #e9b65c; --decide-bg: #3a2c16; --answer: #c3a2ec; --answer-bg: #2e2340;
+  --now: #f08a7e;
   color-scheme: dark } }
 :root[data-theme="dark"] {
   --bg: #13171b; --surface: #1b2127; --fg: #e6eaee; --muted: #94a0ab; --line: #2c343c; --accent: #5fb3bc;
   --do: #8fb9ea; --do-bg: #1d2c3d; --decide: #e9b65c; --decide-bg: #3a2c16; --answer: #c3a2ec; --answer-bg: #2e2340;
+  --now: #f08a7e;
   color-scheme: dark }
 html, body { background: var(--bg); color: var(--fg); }
 body { font-family: var(--font-body); font-size: 15px; line-height: 1.45; }
@@ -45,6 +47,10 @@ li.closed .text { text-decoration: line-through; }
 .kind.do { color: var(--do); background: var(--do-bg); }
 .kind.decide { color: var(--decide); background: var(--decide-bg); }
 .kind.answer { color: var(--answer); background: var(--answer-bg); }
+.urg { font-family: var(--font-mono); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 6px; }
+.urg.now { color: var(--now); } .urg.soon { color: var(--decide); } .urg.later { color: var(--muted); }
+li.ignorable .text { color: var(--muted); }
+.why { grid-column: 2; font-size: 13px; color: var(--muted); }
 .text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .meta { grid-column: 2; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .actions { display: flex; gap: 6px; }
@@ -65,6 +71,10 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); o
     <div class="filters">
       <select id="folder" aria-label="Folder"><option value="">All folders</option></select>
       <select id="session" aria-label="Session"><option value="">All sessions</option></select>
+      <div class="seg" role="group" aria-label="Order">
+        <button id="by-priority" aria-pressed="true">Priority</button>
+        <button id="by-folder" aria-pressed="false">By folder</button>
+      </div>
       <div class="seg" role="group" aria-label="Show">
         <button id="show-open" aria-pressed="true">Open</button>
         <button id="show-closed" aria-pressed="false">Closed</button>
@@ -72,14 +82,22 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); o
     </div>
   </header>
   <main id="list">
-    <div class="empty"><b>Nothing here yet.</b>When a Claude Code session with the claude-asks mod leaves you something to do, decide or answer, it shows up here, grouped by folder and session.</div>
+    <div class="empty"><b>Nothing here yet.</b>When a Claude Code session with the claude-asks mod leaves you something to do, decide or answer, it shows up here, most important first.</div>
   </main>
 </div>
 
 <script>
 const KINDS = { do: "Do", decide: "Decide", answer: "Answer" };
 let asks = [];
-let filter = { folder: "", session: "", closed: false };
+let filter = { folder: "", session: "", closed: false, grouped: false };
+const URG = ["now", "soon", "later"];
+const urgOf = a => URG.includes(a.urgency) ? a.urgency : "soon";
+// same order as the mod: urgency, tied-to-something before ignorable, untriaged first, rank, newest
+function byPriority(x, y) {
+  return URG.indexOf(urgOf(x)) - URG.indexOf(urgOf(y)) || (x.ignorable === true) - (y.ignorable === true)
+    || (typeof x.rank === "number" ? x.rank : 0) - (typeof y.rank === "number" ? y.rank : 0)
+    || (y.createdAt || "").localeCompare(x.createdAt || "");
+}
 try { Object.assign(filter, JSON.parse(localStorage.getItem("asks-filter") || "{}")); } catch {}
 const $ = (id) => document.getElementById(id);
 let db = null;
@@ -107,6 +125,7 @@ function render() {
   for (const a of open) c[a.kind] = (c[a.kind] || 0) + 1;
   $("counts").replaceChildren(
     el("span", {}, el("b", {}, String(open.length)), " open"),
+    el("span", {}, el("b", {}, String(open.filter(a => a.urgency === "now").length)), " now"),
     ...Object.keys(KINDS).map(k => el("span", {}, el("b", {}, String(c[k] || 0)), " " + KINDS[k].toLowerCase())));
 
   const folders = new Map();
@@ -119,13 +138,21 @@ function render() {
   fillSelect($("session"), [...sessions], filter.session, "All sessions");
   $("show-open").setAttribute("aria-pressed", String(!filter.closed));
   $("show-closed").setAttribute("aria-pressed", String(filter.closed));
+  $("by-priority").setAttribute("aria-pressed", String(!filter.grouped));
+  $("by-folder").setAttribute("aria-pressed", String(filter.grouped));
 
   const shown = asks.filter(a => (filter.closed ? a.status !== "open" : a.status === "open")
     && (!filter.folder || a.folder === filter.folder) && (!filter.session || a.sessionId === filter.session))
-    .sort((x, y) => (filter.closed ? (y.closedAt || "").localeCompare(x.closedAt || "") : (y.createdAt || "").localeCompare(x.createdAt || "")));
+    .sort((x, y) => (filter.closed ? (y.closedAt || "").localeCompare(x.closedAt || "") : byPriority(x, y)));
   if (!shown.length) {
     $("list").replaceChildren(el("div", { class: "empty" }, el("b", {}, filter.closed ? "Nothing closed here yet." : "All clear."),
       filter.closed ? "Asks you mark done or dismiss move here." : "No open asks for this view. New ones appear here as Claude sessions file them."));
+    return;
+  }
+  if (!filter.grouped) {
+    const ul = el("ul");
+    for (const a of shown) ul.append(item(a, true));
+    $("list").replaceChildren(ul);
     return;
   }
   const byFolder = new Map();
@@ -150,16 +177,20 @@ function render() {
   $("list").replaceChildren(...out);
 }
 
-function item(a) {
-  const li = el("li", { class: a.status === "open" ? "" : "closed" });
-  li.append(el("span", { class: "kind " + a.kind }, KINDS[a.kind] || a.kind), el("span", { class: "text" }, a.text || ""));
+function item(a, flat) {
+  const li = el("li", { class: (a.status === "open" ? "" : "closed") + (a.ignorable === true ? " ignorable" : "") });
+  li.append(el("span", { class: "kind " + a.kind }, KINDS[a.kind] || a.kind),
+    el("span", { class: "text" }, el("span", { class: "urg " + urgOf(a) }, urgOf(a)), a.text || ""));
   const acts = el("div", { class: "actions" });
   if (a.status === "open") {
     acts.append(btn("Done", () => setStatus(a, "done")), btn("Dismiss", () => setStatus(a, "dismissed")));
   } else acts.append(btn("Reopen", () => setStatus(a, "open")));
   li.append(acts);
   const meta = a.status === "open" ? "Asked " + when(a.createdAt) : (a.status === "done" ? "Done " : "Dismissed ") + when(a.closedAt);
-  li.append(el("span", { class: "meta" }, meta));
+  const why = a.ignorable === true ? "Ignorable: nothing waits on it" : a.blocks ? "Blocks: " + a.blocks : "";
+  if (why) li.append(el("span", { class: "why" }, why));
+  const where = flat ? " · " + (a.folderName || a.folder || "") + (a.sessionName ? " / " + a.sessionName : "") : "";
+  li.append(el("span", { class: "meta" }, meta + where));
   return li;
 }
 function btn(label, fn) { const b = el("button", { type: "button" }, label); b.addEventListener("click", fn); return b; }
@@ -173,6 +204,8 @@ async function setStatus(a, status) {
 
 $("folder").addEventListener("change", e => { filter.folder = e.target.value; filter.session = ""; saveFilter(); render(); });
 $("session").addEventListener("change", e => { filter.session = e.target.value; saveFilter(); render(); });
+$("by-priority").addEventListener("click", () => { filter.grouped = false; saveFilter(); render(); });
+$("by-folder").addEventListener("click", () => { filter.grouped = true; saveFilter(); render(); });
 $("show-open").addEventListener("click", () => { filter.closed = false; saveFilter(); render(); });
 $("show-closed").addEventListener("click", () => { filter.closed = true; saveFilter(); render(); });
 

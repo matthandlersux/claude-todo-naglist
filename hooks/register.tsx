@@ -561,11 +561,13 @@ export const register: Register = (on, rawOptions) => {
     if (e.props.hasSurvey || (await read($, offAtom))) return next(e)
     const line = bandText(await read($, asksAtom), await read($, hereAtom))
     if (!line) return next(e)
-    const { Box, Button } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    // Red when something is marked "now", cyan otherwise
+    const color = / \d+ now/.test(line) ? 'red' : 'cyan'
     return (
       <Box>
         <Button key="qs-band" plain onPress={() => openPane($)}>
-          {line}
+          🐾 <Text color={color} bold>{line}</Text>
         </Button>
       </Box>
     )

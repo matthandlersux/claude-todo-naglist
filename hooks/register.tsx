@@ -562,12 +562,15 @@ export const register: Register = (on, rawOptions) => {
     const line = bandText(await read($, asksAtom), await read($, hereAtom))
     if (!line) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    // Red when something is marked "now", cyan otherwise
-    const color = / \d+ now/.test(line) ? 'red' : 'cyan'
+    // Numbers in one colour, words in another
+    const parts = line.split(/(\d+)/).filter(p => p !== '')
     return (
       <Box>
         <Button key="qs-band" plain onPress={() => openPane($)}>
-          🐾 <Text color={color} bold>{line}</Text>
+          🐾{' '}
+          {parts.map(p =>
+            /^\d+$/.test(p) ? <Text color="magenta" bold>{p}</Text> : <Text color="cyan">{p}</Text>,
+          )}
         </Button>
       </Box>
     )

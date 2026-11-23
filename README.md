@@ -13,21 +13,27 @@ Claude keeps asking you to do things and then scrolls them out of sight; this ke
    /plugin install qs --marketplace matthandlersux/claude-todo-naglist
    ```
    Answer `y` to add the marketplace, then pick a scope.
-2. When Claude first asks to use `ArtifactData`, choose **always allow** (details below).
-3. Work as usual. Whenever Claude leaves you something to do, decide or answer, a 📌 line appears above the prompt.
-4. Type `/qs` to open the list, then press **Done**, **Dismiss** or a reply button.
+2. Run `/qs setup`. It makes your own private claude.ai page that holds the list (allow the `Artifact`
+   call when asked). Once per account: later sessions remember it.
+3. When Claude first asks to use `ArtifactData`, choose **always allow** (details below).
+4. Work as usual. Whenever Claude leaves you something to do, decide or answer, a 📌 line appears above the prompt.
+5. Type `/qs` to open the list, then press **Done**, **Dismiss** or a reply button. Open the page from step 2 on
+   your phone to do the same there.
 
 ## What it does
 
 A Claude Code mod (plugin name `qs`). Every to-do, decision or question a session leaves you (a "q")
 goes into one list on your claude.ai account, with the count kept in sight.
 
-- **Captured as Claude writes.** Claude gets three tools (`qs_add`, `qs_resolve`, `qs_list`) and a
+- **Captured as Claude writes.** Claude gets four tools (`qs_add`, `qs_resolve`, `qs_list`, `qs_order`) and a
   system-prompt note telling it to file each to-do, decision or question for you, one per item, and to
   close items when you say you did them or answer them.
 - **Every ask is judged.** Claude must guess two things when it files one: **urgency** (time: `now` = today
   or something waits on it, `soon` = this week, `later` = no clock) and **ignorable** (true only if nothing
   real is tied to it, blocked on it or half done), plus what it blocks.
+- **Steps stay in order.** When q's belong to one task or must be done in turn, Claude gives them a shared
+  **group** tag (e.g. `router-swap`) and step numbers. A group is listed together, in step order, where its most
+  pressing q would sit. `qs_order` groups or reorders q's already filed.
 - **Re-ranked as things change.** A triage pass (sonnet) re-judges every open ask across all your sessions
   and folders and puts them in order: every 6 hours, or 20 minutes after the last pass when new asks are
   waiting. New asks sort to the top of their urgency until a pass places them. Only one session runs a pass
@@ -42,8 +48,8 @@ goes into one list on your claude.ai account, with the count kept in sight.
   Nothing shows when there are none.
 - **A pane** (`/qs`): Session / Folder / All tabs, in priority order (urgency, then not-ignorable, then the
   last triage's rank), with Done and Dismiss buttons.
-- **Your phone.** The list lives in the database of a private claude.ai page:
-  https://claude.ai/artifact/HNv6tEtKy3rXX2QzkVqRHs. Open it anywhere you're signed in to Claude, tick things off there.
+- **Your phone.** The list lives in the database of your private claude.ai page (made by `/qs setup`).
+  Open it anywhere you're signed in to Claude, tick things off there.
   Priority order by default, or grouped by folder.
 
 ## Install
@@ -64,6 +70,7 @@ the normal permission check. The first time, you'll be asked: choose to always a
 | Command | What it does |
 |---|---|
 | `/qs` | Open the pane |
+| `/qs setup` | Make your private list page (once), or `/qs setup <link>` to use a page you already have |
 | `/qs done <n>` | Mark this session's item number `n` done (numbers as the pane shows them, in priority order) |
 | `/qs dismiss <n>` | Dismiss item `n` |
 | `/qs triage` | Re-rank every open ask now |
@@ -74,7 +81,7 @@ the normal permission check. The first time, you'll be asked: choose to always a
 
 | Option | Default | Meaning |
 |---|---|---|
-| `artifactUrl` | the page above | The claude.ai page whose database (collection `asks`) holds the list |
+| `artifactUrl` | empty | The claude.ai page whose database (collection `asks`) holds the list. Empty: the page `/qs setup` made |
 | `sweep` | `true` | The after-reply safety-net check |
 
 ## How it stores things
@@ -83,7 +90,8 @@ One document per q in the page's `asks` collection (the name predates the rename
 (open/done/dismissed), `folder` (the git root, else the working directory), `folderName`, `sessionId`,
 `sessionName` (the session's title when Claude Code reports one), `sessionStarted`, `createdAt`,
 `closedAt`, `closedBy` (session/pane/page), `source` (tool/sweep), `urgency` (now/soon/later),
-`ignorable`, `blocks`, `options` (reply buttons), `answer`, `answeredAt`, `deliveredAt`, `rank` (the last triage's position, null until triaged), `triagedAt`.
+`ignorable`, `blocks`, `options` (reply buttons), `answer`, `answeredAt`, `deliveredAt`, `rank` (the last triage's position, null until triaged), `triagedAt`, `group` (task tag, '' for none), `step` (place in the group).
+Sessions are named by their title, else the first line of their first prompt (`sessionName`).
 Collection `asksMeta`, doc `triage`: `lastRun`, `runningUntil` (the claim). The database is the truth; the
 session keeps a cache of the open ones, refreshed when the pane opens, after each write, at the start
 and end of every turn, and every minute while the pane is open.

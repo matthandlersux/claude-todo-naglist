@@ -1,4 +1,4 @@
-<title>Q's for Matt</title>
+<title>Q's</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
@@ -51,6 +51,7 @@ li.closed .text { text-decoration: line-through; }
 .urg.now { color: var(--now); } .urg.soon { color: var(--decide); } .urg.later { color: var(--muted); }
 li.ignorable .text { color: var(--muted); }
 .why { grid-column: 2; font-size: 13px; color: var(--muted); }
+.group { grid-column: 2; justify-self: start; font-family: var(--font-mono); font-size: 12px; color: var(--accent); }
 .text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .meta { grid-column: 2; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .actions { display: flex; gap: 6px; }
@@ -67,7 +68,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); o
 
 <div class="wrap">
   <header>
-    <h1>Q's for Matt</h1>
+    <h1>Q's for you</h1>
     <div class="counts" id="counts">Loading…</div>
     <div class="filters">
       <select id="folder" aria-label="Folder"><option value="">All folders</option></select>
@@ -99,6 +100,16 @@ function byPriority(x, y) {
     || (typeof x.rank === "number" ? x.rank : 0) - (typeof y.rank === "number" ? y.rank : 0)
     || (y.createdAt || "").localeCompare(x.createdAt || "");
 }
+// a group (q's of one task) sits where its most pressing q would, its q's in step order
+const groupKey = a => a.group ? "g:" + a.folder + ":" + a.group : "i:" + a.id;
+const stepOf = a => Number.isInteger(a.step) && a.step > 0 ? a.step : Infinity;
+function ordered(list) {
+  const sorted = [...list].sort(byPriority), place = new Map(), pos = new Map();
+  sorted.forEach((a, i) => { if (!place.has(groupKey(a))) place.set(groupKey(a), i); pos.set(a.id, i); });
+  return sorted.sort((x, y) => place.get(groupKey(x)) - place.get(groupKey(y)) || stepOf(x) - stepOf(y) || pos.get(x.id) - pos.get(y.id));
+}
+// a session's title, else when it started; never its id
+const sessionLabel = a => a.sessionName || "session from " + when(a.sessionStarted || a.createdAt);
 try { Object.assign(filter, JSON.parse(localStorage.getItem("asks-filter") || "{}")); } catch {}
 const $ = (id) => document.getElementById(id);
 let db = null;
@@ -134,7 +145,7 @@ function render() {
   if (filter.folder && !folders.has(filter.folder)) filter.folder = "";
   fillSelect($("folder"), [...folders].sort((x, y) => x[1].localeCompare(y[1])), filter.folder, "All folders");
   const sessions = new Map();
-  for (const a of asks) if (!filter.folder || a.folder === filter.folder) sessions.set(a.sessionId, (a.sessionName || a.sessionId.slice(0, 8)) + " · " + when(a.sessionStarted || a.createdAt).split(" ").slice(0, 2).join(" "));
+  for (const a of asks) if (!filter.folder || a.folder === filter.folder) sessions.set(a.sessionId, a.sessionName ? a.sessionName + " · " + when(a.sessionStarted || a.createdAt).split(" ").slice(0, 2).join(" ") : sessionLabel(a));
   if (filter.session && !sessions.has(filter.session)) filter.session = "";
   fillSelect($("session"), [...sessions], filter.session, "All sessions");
   $("show-open").setAttribute("aria-pressed", String(!filter.closed));
@@ -142,9 +153,9 @@ function render() {
   $("by-priority").setAttribute("aria-pressed", String(!filter.grouped));
   $("by-folder").setAttribute("aria-pressed", String(filter.grouped));
 
-  const shown = asks.filter(a => (filter.closed ? a.status !== "open" : a.status === "open")
-    && (!filter.folder || a.folder === filter.folder) && (!filter.session || a.sessionId === filter.session))
-    .sort((x, y) => (filter.closed ? (y.closedAt || "").localeCompare(x.closedAt || "") : byPriority(x, y)));
+  const picked = asks.filter(a => (filter.closed ? a.status !== "open" : a.status === "open")
+    && (!filter.folder || a.folder === filter.folder) && (!filter.session || a.sessionId === filter.session));
+  const shown = filter.closed ? picked.sort((x, y) => (y.closedAt || "").localeCompare(x.closedAt || "")) : ordered(picked);
   if (!shown.length) {
     $("list").replaceChildren(el("div", { class: "empty" }, el("b", {}, filter.closed ? "Nothing closed here yet." : "All clear."),
       filter.closed ? "Q's you mark done or dismiss move here." : "No open q's for this view. New ones appear here as Claude sessions file them."));
@@ -168,7 +179,7 @@ function render() {
     const sec = el("section", { class: "folder" }, el("h2", {}, folder));
     for (const [sid, items] of sess) {
       const first = items[0];
-      const s = el("div", { class: "session" }, el("h3", {}, (first.sessionName || "session " + sid.slice(0, 8)) + " · started " + when(first.sessionStarted || first.createdAt)));
+      const s = el("div", { class: "session" }, el("h3", {}, first.sessionName ? first.sessionName + " · started " + when(first.sessionStarted || first.createdAt) : sessionLabel(first)));
       const ul = el("ul");
       for (const a of items) ul.append(item(a));
       s.append(ul); sec.append(s);
@@ -196,7 +207,8 @@ function item(a, flat) {
     : (a.status === "done" ? "Done " : "Dismissed ") + when(a.closedAt);
   const why = a.ignorable === true ? "Ignorable: nothing waits on it" : a.blocks ? "Blocks: " + a.blocks : "";
   if (why) li.append(el("span", { class: "why" }, why));
-  const where = flat ? " · " + (a.folderName || a.folder || "") + (a.sessionName ? " / " + a.sessionName : "") : "";
+  if (a.group) li.append(el("span", { class: "group" }, a.group + (stepOf(a) !== Infinity ? " · step " + a.step : "")));
+  const where = flat ? " · " + (a.folderName || a.folder || "") + " / " + sessionLabel(a) : "";
   li.append(el("span", { class: "meta" }, meta + where));
   return li;
 }

@@ -1,22 +1,23 @@
 {
   "name": "qs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "description": "Captures every to-do, decision and question (q) a Claude session leaves for you into one list on your claude.ai account, and keeps it visible above the prompt.",
-  "author": { "name": "Matt Handler" },
+  "author": {
+    "name": "Matt Handler"
+  },
   "types": "./types/index.d.ts",
   "userConfig": {
     "artifactUrl": {
       "type": "string",
-      "title": "Q's page URL",
-      "description": "The claude.ai artifact whose database holds the asks (collection 'asks').",
-      "default": "https://claude.ai/artifact/HNv6tEtKy3rXX2QzkVqRHs",
+      "title": "List page (leave empty to use /qs setup)",
+      "description": "Where your q's are kept: a private claude.ai page (https://claude.ai/artifact/...). Leave this empty and run /qs setup once to make one for you. Fill it in only to use a page you already have; every session using the same page shares one list.",
       "required": false
     },
     "sweep": {
       "type": "boolean",
-      "title": "Safety-net sweep",
-      "description": "After each reply, a cheap model call looks for asks Claude forgot to file.",
+      "title": "Catch q's Claude forgot to file",
+      "description": "On: after each longer reply, a small model (Haiku) rereads it and files anything left for you that Claude didn't add itself. Costs one small model call per reply. Off: only what Claude files.",
       "default": true,
       "required": false
     }

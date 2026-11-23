@@ -36,6 +36,10 @@ export type Ask = {
   answer: string | null
   /** When the filing session sent the answer on to its conversation; null until then. */
   deliveredAt: string | null
+  /** A short tag shared by q's that belong to one task ('' for none); a group is listed together. */
+  group: string
+  /** The q's place within its group (1 = first), null when it has none. */
+  step: number | null
 }
 
 /** Where this session is: what the band and the Session/Folder tabs filter on. */

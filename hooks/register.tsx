@@ -16,25 +16,30 @@ import {
   DbError,
   folderAsks,
   judged,
+  cleanGroup,
   cleanOptions,
+  cleanStep,
   markDelivered,
   mightHoldAsks,
+  nameFromPrompt,
   readUndelivered,
   newId,
   parseSweep,
   readOpen,
   readTriageMeta,
   sessionAsks,
+  sessionLabel,
   triageChanges,
   triageDue,
-  writeTriage,
-  writeTriageMeta,
+  writeChanges,
+  writeChangesMeta,
 } from './db'
 
 const PLUGIN = 'qs'
 const PANE = 'qs'
 const OFF_TEXT = "Q's capture is off in this session (turn it on with /qs on)."
-const DEFAULT_URL = 'https://claude.ai/artifact/HNv6tEtKy3rXX2QzkVqRHs'
+const NOT_SET_UP = "Q's isn't set up yet: ask the user to run /qs setup, which makes their private list page."
+const URL_PATTERN = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[\w-]+/
 
 const asksAtom = atom({ plugin: 'qs', key: 'asks' } as const, [])
 const hereAtom = atom({ plugin: 'qs', key: 'here' } as const, null)
@@ -45,8 +50,8 @@ const errorAtom = atom({ plugin: 'qs', key: 'error' } as const, '')
 
 // The full names are mcp__<server>__qs_*, where the server name is the engine's (it can lag a
 // rename), so hooks match on the ending and the prompt names what tool.register reported.
-const TOOL = { add: 'qs_add', resolve: 'qs_resolve', list: 'qs_list' }
-const MATCH = { add: /__qs_add$/, resolve: /__qs_resolve$/, list: /__qs_list$/ }
+const TOOL = { add: 'qs_add', resolve: 'qs_resolve', list: 'qs_list', order: 'qs_order' }
+const MATCH = { add: /__qs_add$/, resolve: /__qs_resolve$/, list: /__qs_list$/, order: /__qs_order$/ }
 
 const promptSection = () => `# Q's for the user (qs mod)
 Whenever a reply leaves the user something to do, decide or answer, file each one with the \`${TOOL.add}\` tool as part of that reply: one call per item, kind "do", "decide" or "answer", and a short imperative text that makes sense on its own, away from this conversation (name the repo, file, server or thing it is about, and copy in any link, path or command the user needs to act on it).
@@ -54,6 +59,7 @@ Every ask needs your best guess at two things, even when unsure:
 - urgency (time): "now" if it matters today or something is waiting on it right now, "soon" for this week, "later" if there is no clock on it.
 - ignorable: true only if nothing real is tied to it, blocked on it or half done, so it could sit forever without harm. When false, say in blocks what it blocks, is tied to, or what is half done.
 - options: when the user's part is just clicking a button (approve a push or deploy, pick A or B, yes/no), give the 2-3 short button labels, e.g. ["Push", "Not yet"]. Their click comes back to this session as a message; then do what it says.
+When several q's belong to one task, or must be done in a set order (steps of a fix, things to try in turn), give them the same group (a short kebab-case tag for the task, e.g. "router-swap") and step numbers 1, 2, 3 in the order the user should do them; they are then listed together in that order. To group or reorder q's already filed, call \`${TOOL.order}\` with their ids in order.
 Don't file what you will do yourself, and don't file generic offers like "let me know if you want more".
 When the user says they did an item, or answers or decides it, close it with \`${TOOL.resolve}\` (status "done", or "dismissed" when it no longer applies).
 Don't re-file an item that is still open: check \`${TOOL.list}\` (this session's open q's with their ids) when unsure.`
@@ -63,8 +69,12 @@ const SWEEP_SYSTEM =
 
 type Options = { artifactUrl: string; sweep: boolean }
 
-// Set by register (which runs again on every load), read by the helpers below.
-let url = DEFAULT_URL
+// Set by register (which runs again on every load) and /qs setup, read by the helpers below.
+// '' until the person has a list page: then nothing is read, filed or shown but the setup hint.
+let url = ''
+const STORE_URL = 'artifactUrl'
+// The session's name from its first prompt, for sessions the engine reports no title for.
+let promptName = ''
 
 // ---- where this session is, and the cache -----------------------------
 
@@ -93,6 +103,7 @@ function fail($: EngineInterface, what: string, err: unknown) {
 
 async function refresh($: EngineInterface): Promise<Ask[]> {
   await locate($)
+  if (!url) return []
   const open = await readOpen($, url)
   await update($, asksAtom, () => open)
   await update($, errorAtom, () => '')
@@ -108,7 +119,9 @@ async function fileAsk(
   judgement: Judged,
   source: 'tool' | 'sweep',
   options: string[] = [],
+  place: { group: string; step: number | null } = { group: '', step: null },
 ): Promise<Ask> {
+  if (!url) throw new Error(NOT_SET_UP)
   const here = await locate($)
   const now = await $.clock.now()
   let started = ''
@@ -126,7 +139,7 @@ async function fileAsk(
     folder: here.folder,
     folderName: baseName(here.folder),
     sessionId: here.sessionId,
-    sessionName: await read($, titleAtom),
+    sessionName: await sessionName($),
     sessionStarted: started,
     createdAt: new Date(now).toISOString(),
     closedAt: null,
@@ -138,6 +151,7 @@ async function fileAsk(
     options,
     answer: null,
     deliveredAt: null,
+    ...place,
   }
   ask.version = await create($, url, ask)
   await update($, asksAtom, list => [...list.filter(a => a.id !== ask.id), ask])
@@ -169,7 +183,7 @@ let isDelivering = false
 
 /** Sends answers picked elsewhere (the phone page, another session's pane) into this conversation. */
 async function deliverAnswers($: EngineInterface) {
-  if (isDelivering || (await read($, offAtom))) return
+  if (!url || isDelivering || (await read($, offAtom))) return
   isDelivering = true
   try {
     const here = await locate($)
@@ -191,10 +205,35 @@ const same = (a: string, b: string) =>
 
 
 // The session's title, where the engine reports one.
+// A new title also renames this session's open q's, so the pane and page show it.
 const keepTitle = async ($: EngineInterface, title: unknown) => {
-  if (typeof title === 'string' && title.trim() !== '' && title !== (await read($, titleAtom))) {
-    await update($, titleAtom, () => title.trim())
+  if (typeof title !== 'string' || title.trim() === '' || title.trim() === (await read($, titleAtom))) return
+  const name = title.trim()
+  await update($, titleAtom, () => name)
+  const here = await read($, hereAtom)
+  if (!url || !here) return
+  const stale = (await read($, asksAtom)).filter(a => a.sessionId === here.sessionId && a.sessionName !== name)
+  if (stale.length === 0) return
+  await writeChanges($, url, stale.map(ask => ({ ask, data: { sessionName: name } })))
+    .then(() => refresh($))
+    .catch(err => fail($, 'renaming the session on its q\'s failed', err))
+}
+
+/** The session's title, else a short name from its first prompt; never its id. */
+async function sessionName($: EngineInterface): Promise<string> {
+  const title = await read($, titleAtom)
+  if (title) return title
+  if (!promptName) {
+    try {
+      const first = (await $.session.messages()).find(
+        m => m.role === 'user' && !/^This session is being continued/.test(m.text) && nameFromPrompt(m.text) !== '',
+      )
+      promptName = first ? nameFromPrompt(first.text) : ''
+    } catch {
+      promptName = ''
+    }
   }
+  return promptName
 }
 
 async function sweep($: EngineInterface, answer: string) {
@@ -242,6 +281,7 @@ let isTriaging = false
 
 /** Runs a triage pass when one is due (or `force`), claiming the shared doc so only one session runs it. */
 async function maybeTriage($: EngineInterface, force: boolean): Promise<string> {
+  if (!url) return NOT_SET_UP
   if (isTriaging) return 'A triage pass is already running in this session.'
   if (await read($, offAtom)) return OFF_TEXT
   isTriaging = true
@@ -255,7 +295,7 @@ async function maybeTriage($: EngineInterface, force: boolean): Promise<string> 
     const nowIso = new Date(now).toISOString()
     // the claim: a conflict here means another session got there first
     try {
-      await writeTriageMeta($, url, meta, {
+      await writeChangesMeta($, url, meta, {
         lastRun: meta?.lastRun ?? '',
         runningUntil: new Date(now + 10 * 60_000).toISOString(),
       })
@@ -275,6 +315,7 @@ async function maybeTriage($: EngineInterface, force: boolean): Promise<string> 
         blocks: a.blocks,
         asked: a.createdAt.slice(0, 16),
         where: [a.folderName, a.sessionName].filter(Boolean).join(' / '),
+        ...(a.group ? { group: a.group, step: a.step } : {}),
         triaged: a.triagedAt !== null,
       }),
     )
@@ -288,6 +329,7 @@ Re-judge each ask and put the whole list in the order the person should deal wit
 - ignorable is about consequence: true only if nothing real is tied to it, blocked on it or half done, so it could sit forever without harm. Half-done work and anything blocking other work is never ignorable.
 - blocks: what it blocks, is tied to, or what is half done ("" when ignorable).
 - New asks that matter more than older ones go above them.
+- Asks sharing a "group" are steps of one task, always shown together in step order: judge them together.
 Answer with a JSON array of every id, in order: [{"id", "urgency", "ignorable", "blocks"}].`
     const r = await $.model.complete({
       model: 'sonnet',
@@ -302,12 +344,12 @@ Answer with a JSON array of every id, in order: [{"id", "urgency", "ignorable", 
       // asks closed or edited since the read fail their version pin; the next pass gets them
       const changes = triageChanges(r.text, list, nowIso)
       changed = changes.length
-      await writeTriage($, url, changes).catch(err => fail($, 'triage write failed', err))
+      await writeChanges($, url, changes).catch(err => fail($, 'triage write failed', err))
     } else {
       $.ui.log(`${PLUGIN}: triage got no answer (${r.reason})`, { to: 'debug' })
     }
     const after = await readTriageMeta($, url)
-    await writeTriageMeta($, url, after, { lastRun: r.isAnswered ? nowIso : (meta?.lastRun ?? ''), runningUntil: '' })
+    await writeChangesMeta($, url, after, { lastRun: r.isAnswered ? nowIso : (meta?.lastRun ?? ''), runningUntil: '' })
     await refresh($)
     return r.isAnswered ? `Triaged ${list.length} q's; ${changed} changed.` : `Triage got no answer (${r.reason}).`
   } catch (err) {
@@ -319,6 +361,47 @@ Answer with a JSON array of every id, in order: [{"id", "urgency", "ignorable", 
 }
 
 
+/**
+ * /qs setup: with a link, use that page; without one, publish this mod's page/asks.html as the
+ * person's own private page (it keeps the list in its db). Remembered across sessions.
+ */
+async function setup($: EngineInterface, arg: string): Promise<string> {
+  if (arg) {
+    const link = URL_PATTERN.exec(arg)?.[0]
+    if (!link) return 'That isn\'t a claude.ai artifact link (https://claude.ai/artifact/...).'
+    return useUrl($, link, `Using ${link} for your q's.`)
+  }
+  if (url) return `Already set up: ${url}. To use another page: /qs setup <its link>.`
+  const page = `${$.plugin.root}/page/asks.html`
+  const manual = `Or ask Claude to publish ${page} as an Artifact with the db capability, then run /qs setup <its link>.`
+  let text = ''
+  try {
+    const ran = await $.tool.call({
+      tool: 'Artifact',
+      action: 'publish',
+      file_path: page,
+      icon: 'list',
+      description: "The things Claude sessions left you to do, decide or answer.",
+      capabilities: { db: {} },
+    } as never)
+    if (ran.deny !== undefined) return `Making the page was refused: ${ran.deny}. ${manual}`
+    text = typeof ran.text === 'string' ? ran.text : typeof ran.result === 'string' ? ran.result : JSON.stringify(ran.result ?? '')
+  } catch (err) {
+    return `Making the page failed: ${err instanceof Error ? err.message : String(err)}. ${manual}`
+  }
+  const link = URL_PATTERN.exec(text)?.[0]
+  if (!link) return `Making the page didn't give a link back (${text.slice(0, 200)}). ${manual}`
+  return useUrl($, link, `Made your private q's page: ${link}. Open it on your phone to tick things off.`)
+}
+
+async function useUrl($: EngineInterface, link: string, done: string): Promise<string> {
+  url = link
+  // kept for later sessions; this one uses it either way
+  await $.store.set(STORE_URL, link).catch(err => fail($, 'saving the page link failed', err))
+  await refreshQuietly($)
+  return done
+}
+
 async function openPane($: EngineInterface) {
   await $.ui.open({ id: PANE, title: "Q's" })
   void refreshQuietly($)
@@ -328,17 +411,19 @@ async function openPane($: EngineInterface) {
 
 export const register: Register = (on, rawOptions) => {
   const options: Options = {
-    artifactUrl:
-      typeof rawOptions.artifactUrl === 'string' && rawOptions.artifactUrl.trim() !== ''
-        ? rawOptions.artifactUrl.trim()
-        : DEFAULT_URL,
+    artifactUrl: typeof rawOptions.artifactUrl === 'string' ? rawOptions.artifactUrl.trim() : '',
     sweep: rawOptions.sweep !== false,
   }
+  // the setting wins; else the page /qs setup made (read at session start)
   url = options.artifactUrl
 
   // ---- session start: tools, command, timer ------------------------------
 
   on('session.start', async ($, e, next) => {
+    if (!url) {
+      const stored = await $.store.get(STORE_URL).catch(() => undefined)
+      if (typeof stored === 'string') url = stored
+    }
     TOOL.add = (await $.tool.register({
       name: 'qs_add',
       description:
@@ -360,6 +445,16 @@ export const register: Register = (on, rawOptions) => {
           blocks: {
             type: 'string',
             description: 'What it blocks, is tied to, or what is half done. Empty when ignorable.',
+          },
+          group: {
+            type: 'string',
+            description:
+              'Optional short kebab-case tag shared by q\'s that belong to one task, e.g. "router-swap". Grouped q\'s are listed together.',
+          },
+          step: {
+            type: 'integer',
+            minimum: 1,
+            description: 'Optional place within its group (1 = do first). Use with group when the order matters.',
           },
           options: {
             type: 'array',
@@ -386,6 +481,20 @@ export const register: Register = (on, rawOptions) => {
       },
       isDeferred: false,
     })).tool
+    TOOL.order = (await $.tool.register({
+      name: 'qs_order',
+      description:
+        "Group open q's that belong to one task and set the order to do them in: pass their ids in that order. They get the group and steps 1, 2, 3...",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ids: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Open q ids, first to do first.' },
+          group: { type: 'string', description: 'Short kebab-case tag for the task, e.g. "router-swap".' },
+        },
+        required: ['ids', 'group'],
+      },
+      isDeferred: false,
+    })).tool
     TOOL.list = (await $.tool.register({
       name: 'qs_list',
       description: "List the user's open q's with their ids: this session's (default), this folder's, or all.",
@@ -397,8 +506,8 @@ export const register: Register = (on, rawOptions) => {
     })).tool
     await $.command.register({
       name: 'qs',
-      description: "Show the things Claude left for you (q's); /qs done|dismiss <n>, /qs triage, /qs off|on",
-      argumentHint: '[done <n> | dismiss <n> | triage | off | on]',
+      description: "Show the things Claude left for you (q's); /qs setup, /qs done|dismiss <n>, /qs triage, /qs off|on",
+      argumentHint: '[setup [url] | done <n> | dismiss <n> | triage | off | on]',
     })
     // answers picked on the phone page reach this conversation within a minute
     $.clock.every(60_000, () => void deliverAnswers($).catch(err => fail($, 'delivering answers failed', err)))
@@ -431,7 +540,7 @@ export const register: Register = (on, rawOptions) => {
 
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
-    if (await read($, offAtom)) return composed
+    if (!url || (await read($, offAtom))) return composed
     return {
       ...composed,
       sections: [...composed.sections, { id: `${PLUGIN}:qs`, text: promptSection(), scope: 'session' as const }],
@@ -442,7 +551,17 @@ export const register: Register = (on, rawOptions) => {
 
   on('tool.call', { tool: MATCH.add }, async ($, e) => {
     if (await read($, offAtom)) return { result: OFF_TEXT }
-    const input = e as unknown as { text?: unknown; kind?: unknown; urgency?: unknown; ignorable?: unknown; blocks?: unknown; options?: unknown }
+    if (!url) return { result: NOT_SET_UP }
+    const input = e as unknown as {
+      text?: unknown
+      kind?: unknown
+      urgency?: unknown
+      ignorable?: unknown
+      blocks?: unknown
+      options?: unknown
+      group?: unknown
+      step?: unknown
+    }
     const text = typeof input.text === 'string' ? input.text.trim() : ''
     const kind: AskKind = input.kind === 'decide' || input.kind === 'answer' ? input.kind : 'do'
     if (!text) return { result: 'Nothing filed: text is empty.' }
@@ -450,8 +569,11 @@ export const register: Register = (on, rawOptions) => {
     const dup = sessionAsks(await read($, asksAtom), here).find(a => same(a.text, text))
     if (dup) return { result: `Already open as ${dup.id}; not filed again.` }
     try {
-      const ask = await fileAsk($, text, kind, judged(input), 'tool', cleanOptions(input.options))
-      return { result: `Filed ${ask.id} (${kind}, ${ask.urgency}${ask.ignorable ? ', ignorable' : ''}).` }
+      const group = cleanGroup(input.group)
+      const place = { group, step: group ? cleanStep(input.step) : null }
+      const ask = await fileAsk($, text, kind, judged(input), 'tool', cleanOptions(input.options), place)
+      const where = group ? `, ${group}${ask.step ? ` step ${ask.step}` : ''}` : ''
+      return { result: `Filed ${ask.id} (${kind}, ${ask.urgency}${ask.ignorable ? ', ignorable' : ''}${where}).` }
     } catch (err) {
       fail($, 'qs_add failed', err)
       return { result: `Could not file it: ${err instanceof Error ? err.message : String(err)}` }
@@ -460,6 +582,7 @@ export const register: Register = (on, rawOptions) => {
 
   on('tool.call', { tool: MATCH.resolve }, async ($, e) => {
     if (await read($, offAtom)) return { result: OFF_TEXT }
+    if (!url) return { result: NOT_SET_UP }
     const input = e as unknown as { id?: unknown; status?: unknown }
     const id = typeof input.id === 'string' ? input.id.trim() : ''
     const status = input.status === 'dismissed' ? 'dismissed' : 'done'
@@ -475,8 +598,30 @@ export const register: Register = (on, rawOptions) => {
     }
   }).catch(() => ({ result: "The q's tool failed; see the debug log." }))
 
+  on('tool.call', { tool: MATCH.order }, async ($, e) => {
+    if (await read($, offAtom)) return { result: OFF_TEXT }
+    if (!url) return { result: NOT_SET_UP }
+    const input = e as unknown as { ids?: unknown; group?: unknown }
+    const ids = Array.isArray(input.ids) ? input.ids.filter((x): x is string => typeof x === 'string').map(x => x.trim()) : []
+    const group = cleanGroup(input.group)
+    if (!group) return { result: 'Nothing changed: group is empty.' }
+    try {
+      const open = await refresh($)
+      const missing = ids.filter(id => !open.some(a => a.id === id))
+      if (missing.length) return { result: `Nothing changed: no open q with id ${missing.join(', ')}.` }
+      const asks = ids.map(id => open.find(a => a.id === id)!)
+      await writeChanges($, url, asks.map((ask, i) => ({ ask, data: { group, step: i + 1 } })))
+      await refresh($)
+      return { result: `Grouped ${asks.length} q's as ${group}, in that order.` }
+    } catch (err) {
+      fail($, 'qs_order failed', err)
+      return { result: `Could not reorder: ${err instanceof Error ? err.message : String(err)}` }
+    }
+  }).catch(() => ({ result: "The q's tool failed; see the debug log." }))
+
   on('tool.call', { tool: MATCH.list }, async ($, e) => {
     if (await read($, offAtom)) return { result: OFF_TEXT }
+    if (!url) return { result: NOT_SET_UP }
     const scope = (e as unknown as { scope?: unknown }).scope
     let open: Ask[]
     try {
@@ -495,7 +640,9 @@ export const register: Register = (on, rawOptions) => {
     if (shown.length === 0) return { result: "No open q's." }
     const lines = shown.map(
       a =>
-        `${a.id} · ${a.urgency}${a.ignorable ? ' · ignorable' : ''} · ${a.kind} · ${a.text}` +
+        `${a.id} · ${a.urgency}${a.ignorable ? ' · ignorable' : ''} · ${a.kind}` +
+        (a.group ? ` · ${a.group}${a.step ? ` #${a.step}` : ''}` : '') +
+        ` · ${a.text}` +
         (a.blocks ? ` [blocks: ${a.blocks}]` : '') +
         (scope === 'session' || scope === undefined ? '' : ` (${a.folderName || a.folder})`),
     )
@@ -524,6 +671,8 @@ export const register: Register = (on, rawOptions) => {
 
   on('command.run', { command: 'qs' }, async ($, e) => {
     const [verb = '', arg = ''] = e.args.trim().toLowerCase().split(/\s+/)
+    if (verb === 'setup') return { text: await setup($, e.args.trim().split(/\s+/)[1] ?? '') }
+    if (!url) return { text: NOT_SET_UP.replace('ask the user to run', 'run') }
     if (verb === '') {
       await openPane($)
       return { text: "Q's pane opened." }
@@ -552,13 +701,23 @@ export const register: Register = (on, rawOptions) => {
       }
     }
     if (verb === 'triage') return { text: await maybeTriage($, true) }
-    return { text: 'Usage: /qs  |  /qs done <n>  |  /qs dismiss <n>  |  /qs triage  |  /qs off  |  /qs on' }
+    return { text: 'Usage: /qs  |  /qs setup [url]  |  /qs done <n>  |  /qs dismiss <n>  |  /qs triage  |  /qs off  |  /qs on' }
   })
 
   // ---- the band above the prompt ---------------------------------------------
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || (await read($, offAtom))) return next(e)
+    if (!url) {
+      const { Box, Text } = $.ui.resolve(e)
+      return (
+        <Box>
+          <Text key="qs-band">
+            📌 <Text color="white">q's: run /qs setup to make your list page</Text>
+          </Text>
+        </Box>
+      )
+    }
     const line = bandText(await read($, asksAtom), await read($, hereAtom))
     if (!line) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
@@ -580,6 +739,7 @@ export const register: Register = (on, rawOptions) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
+    if (!url) return <Text>{NOT_SET_UP.replace('ask the user to run', 'run')}</Text>
     const tab = await read($, tabAtom)
     const asks = await read($, asksAtom)
     const here = await read($, hereAtom)
@@ -591,7 +751,7 @@ export const register: Register = (on, rawOptions) => {
     const numbers = new Map(mine.map((a, i) => [a.id, i + 1]))
     const shown = tab === 'session' ? mine : tab === 'folder' ? folderAsks(asks, here) : allAsks(asks)
     const where = (a: Ask) =>
-      [tab === 'all' ? a.folderName || a.folder : '', a.sessionId === here?.sessionId ? 'this session' : a.sessionName || `session ${a.sessionId.slice(0, 8)}`]
+      [tab === 'all' ? a.folderName || a.folder : '', a.sessionId === here?.sessionId ? 'this session' : sessionLabel(a)]
         .filter(Boolean)
         .join(' · ')
 
@@ -643,7 +803,9 @@ export const register: Register = (on, rawOptions) => {
             </Text>
             <Text dimColor wrap="wrap">
               {'   '}
-              {[a.ignorable ? 'ignorable' : a.blocks ? `blocks: ${a.blocks}` : '', where(a)].filter(Boolean).join(' · ')}
+              {[a.group ? `${a.group}${a.step ? ` #${a.step}` : ''}` : '', a.ignorable ? 'ignorable' : a.blocks ? `blocks: ${a.blocks}` : '', where(a)]
+                .filter(Boolean)
+                .join(' · ')}
             </Text>
             <Box flexDirection="row" gap={1}>
               {a.options.length > 0 ? (

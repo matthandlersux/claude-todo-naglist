@@ -119,7 +119,20 @@ export function toAsk(doc: RawDoc): Ask | null {
     options: cleanOptions(d.options),
     answer: typeof d.answer === 'string' && d.answer !== '' ? d.answer : null,
     deliveredAt: typeof d.deliveredAt === 'string' ? d.deliveredAt : null,
+    group: cleanGroup(d.group),
+    step: cleanStep(d.step),
   }
+}
+
+/** A group tag as stored: lowercase kebab-case, at most 40 characters, '' for none. */
+export function cleanGroup(v: unknown): string {
+  if (typeof v !== 'string') return ''
+  return v.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+}
+
+/** A step number as stored: a positive whole number, else null. */
+export function cleanStep(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : null
 }
 
 /** Up to 3 short, distinct button labels. */
@@ -211,7 +224,7 @@ export async function readTriageMeta($: EngineInterface, url: string): Promise<T
 }
 
 /** Writes the triage doc, pinned to the version last read (creates it when there is none). */
-export async function writeTriageMeta(
+export async function writeChangesMeta(
   $: EngineInterface,
   url: string,
   meta: TriageMeta | null,
@@ -224,7 +237,7 @@ export async function writeTriageMeta(
 }
 
 /** Applies a triage's changes in batches of 50, each pinned to the version it was judged at. */
-export async function writeTriage(
+export async function writeChanges(
   $: EngineInterface,
   url: string,
   changes: { ask: Ask; data: Record<string, unknown> }[],
@@ -265,18 +278,38 @@ export function byPriority(a: Ask, b: Ask): number {
   )
 }
 
-/** Every open ask in priority order. */
-export const allAsks = (asks: readonly Ask[]): Ask[] => [...asks].sort(byPriority)
+const groupKey = (a: Ask) => (a.group ? `g\u0000${a.folder}\u0000${a.group}` : `i\u0000${a.id}`)
+
+/**
+ * Priority order, with each group kept together: a group sits where its most pressing q
+ * would, and its q's follow in step order (unnumbered ones last, by priority).
+ */
+export function ordered(asks: readonly Ask[]): Ask[] {
+  const sorted = [...asks].sort(byPriority)
+  const place = new Map<string, number>()
+  sorted.forEach((a, i) => {
+    if (!place.has(groupKey(a))) place.set(groupKey(a), i)
+  })
+  const pos = new Map(sorted.map((a, i) => [a.id, i]))
+  const stepOf = (a: Ask) => a.step ?? Number.MAX_SAFE_INTEGER
+  return sorted.sort(
+    (x, y) =>
+      place.get(groupKey(x))! - place.get(groupKey(y))! || stepOf(x) - stepOf(y) || pos.get(x.id)! - pos.get(y.id)!,
+  )
+}
+
+/** Every open ask in order (see ordered). */
+export const allAsks = (asks: readonly Ask[]): Ask[] => ordered(asks)
 
 /** This session's open asks in the numbered order the band, pane and /qs use. */
 export function sessionAsks(asks: readonly Ask[], here: AskHere | null): Ask[] {
   if (!here) return []
-  return asks.filter(a => a.sessionId === here.sessionId).sort(byPriority)
+  return ordered(asks.filter(a => a.sessionId === here.sessionId))
 }
 
 export function folderAsks(asks: readonly Ask[], here: AskHere | null): Ask[] {
   if (!here) return []
-  return asks.filter(a => a.folder === here.folder).sort(byPriority)
+  return ordered(asks.filter(a => a.folder === here.folder))
 }
 
 /** The band's one line, or '' when this session has nothing open. */
@@ -291,6 +324,24 @@ export function bandText(asks: readonly Ask[], here: AskHere | null): string {
   const inFolder = folderAsks(asks, here).length
   const extra = inFolder > mine.length ? `   (${inFolder} in this folder)` : ''
   return `${mine.length} q's for you · ${counts.join(' · ')}${extra}   /qs`
+}
+
+/** How a session is named to the person: its title, else when it started (never its id). */
+export function sessionLabel(a: Pick<Ask, 'sessionName' | 'sessionStarted' | 'createdAt'>): string {
+  if (a.sessionName) return a.sessionName
+  const t = new Date(a.sessionStarted || a.createdAt)
+  if (Number.isNaN(t.getTime())) return 'a session'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `session from ${t.getMonth() + 1}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`
+}
+
+/** A short session name from its first prompt: one line, tags dropped, at most 50 characters. */
+export function nameFromPrompt(text: string): string {
+  const line = text
+    .replace(/<([a-z-]+)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return line.length > 50 ? `${line.slice(0, 49).trimEnd()}…` : line
 }
 
 export function age(iso: string, now: number): string {

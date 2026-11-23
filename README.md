@@ -1,7 +1,23 @@
 # Todo Nag List
 
-Claude is always coming up with things it wants you to do, then scrolls them off the page under more
-output until you lose them; this just keeps track of them.
+Claude keeps asking you to do things and then scrolls them out of sight; this keeps them in one list, pinned above your prompt.
+
+![The band above the prompt and the /qs pane, with sample q's](docs/screenshot.png)
+
+*Sample data. Left: the line above the prompt. Right: the `/qs` pane.*
+
+## Quickstart
+
+1. In a Claude Code terminal session, run:
+   ```
+   /plugin install qs --marketplace matthandlersux/claude-todo-naglist
+   ```
+   Answer `y` to add the marketplace, then pick a scope.
+2. When Claude first asks to use `ArtifactData`, choose **always allow** (details below).
+3. Work as usual. Whenever Claude leaves you something to do, decide or answer, a 📌 line appears above the prompt.
+4. Type `/qs` to open the list, then press **Done**, **Dismiss** or a reply button.
+
+## What it does
 
 A Claude Code mod (plugin name `qs`). Every to-do, decision or question a session leaves you (a "q")
 goes into one list on your claude.ai account, with the count kept in sight.
@@ -22,7 +38,7 @@ goes into one list on your claude.ai account, with the count kept in sight.
   a minute (each session checks once a minute); a closed session gets it when you resume it.
 - **Safety net.** After each longer reply a cheap model call (haiku) checks for q's Claude forgot to file
   and adds them (marked `sweep`). It never holds up the turn. Can be switched off.
-- **Always visible.** A line above the prompt: `3 q's for you · 1 do · 1 decide · 1 answer   (7 in this folder)   /qs`.
+- **Always visible.** A line above the prompt: `📌 3 q's for you · 1 do · 1 decide · 1 answer   (7 in this folder)   /qs`.
   Nothing shows when there are none.
 - **A pane** (`/qs`): Session / Folder / All tabs, in priority order (urgency, then not-ignorable, then the
   last triage's rank), with Done and Dismiss buttons.
@@ -32,13 +48,10 @@ goes into one list on your claude.ai account, with the count kept in sight.
 
 ## Install
 
-At the prompt of a terminal session:
+At the prompt of a terminal session: `/plugin install qs --marketplace matthandlersux/claude-todo-naglist`.
+From a shell: `claude plugin install qs --marketplace matthandlersux/claude-todo-naglist`.
 
-```
-/plugin install qs --marketplace matthandlersux/claude-todo-naglist
-```
-
-Answer `y` to add the marketplace, then pick a scope. (From a shell: `claude plugin install qs --marketplace matthandlersux/claude-todo-naglist`.)
+To stop using it: `/plugin uninstall qs` (your list stays on the claude.ai page).
 
 ## Allow ArtifactData
 

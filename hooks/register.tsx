@@ -567,9 +567,9 @@ export const register: Register = (on, rawOptions) => {
     return (
       <Box>
         <Button key="qs-band" plain onPress={() => openPane($)}>
-          🐾{' '}
+          📌{' '}
           {parts.map(p =>
-            /^\d+$/.test(p) ? <Text color="magenta" bold>{p}</Text> : <Text color="cyan">{p}</Text>,
+            /^\d+$/.test(p) ? <Text color="magenta" bold>{p}</Text> : <Text color="white">{p}</Text>,
           )}
         </Button>
       </Box>
@@ -613,16 +613,21 @@ export const register: Register = (on, rawOptions) => {
       void refreshQuietly($)
     }
     const tabButton = (t: AskTab, label: string) => (
-      <Button key={`tab:${t}`} label={tab === t ? `${label} *` : label} variant={tab === t ? 'primary' : 'secondary'} onPress={setTab(t)} />
+      <Box key={`tab:${t}`} flexShrink={0}>
+        <Button label={tab === t ? `${label} *` : label} variant={tab === t ? 'primary' : 'secondary'} onPress={setTab(t)} />
+      </Box>
     )
 
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" gap={1}>
+        {/* Narrow pane: whole buttons wrap to the next line instead of being squeezed */}
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
           {tabButton('session', `Session ${mine.length}`)}
           {tabButton('folder', `Folder ${folderAsks(asks, here).length}`)}
           {tabButton('all', `All ${asks.length}`)}
-          <Button key="refresh" label="Refresh" onPress={() => void refreshQuietly($)} />
+          <Box key="refresh" flexShrink={0}>
+            <Button label="Refresh" onPress={() => void refreshQuietly($)} />
+          </Box>
         </Box>
         {isOff && <Text dimColor>Capture is off in this session (/qs on).</Text>}
         {error !== '' && <Text color="red">{error}</Text>}

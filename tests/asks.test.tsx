@@ -174,7 +174,7 @@ test('asks_add writes a set through ArtifactData and the band shows it', async (
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    expect((await ui.find({ key: 'qs-band' }))?.text).toMatch(/^🐾 1 q's for you · 1 now · 1 do/)
+    expect((await ui.find({ key: 'qs-band' }))?.text).toMatch(/^📌 1 q's for you · 1 now · 1 do/)
     await ui.unmount()
   }
 
@@ -351,7 +351,7 @@ test('answers picked on the page reach the filing session once, pinned to the ve
   // the cache still holds it as open (read before the page answered it)
   await $.tool.call({ tool: 'mcp__qs__qs_list' })
   const before = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect((await before.find({ key: 'qs-band' }))?.text).toMatch(/^🐾 1 q's for you/)
+  expect((await before.find({ key: 'qs-band' }))?.text).toMatch(/^📌 1 q's for you/)
   await before.unmount()
   await clock.advance(5_000)
   // delivered: gone from the band without waiting for a refresh

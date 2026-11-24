@@ -179,6 +179,14 @@ export async function readOpen($: EngineInterface, url: string): Promise<Ask[]> 
     .filter((a): a is Ask => a !== null && a.status === 'open')
 }
 
+/** Every ask in the db, open or closed. */
+export async function readAll($: EngineInterface, url: string): Promise<Ask[]> {
+  const text = await call($, url, { action: 'list', query: { limit: 1000 } })
+  return parseDocs(text)
+    .map(toAsk)
+    .filter((a): a is Ask => a !== null)
+}
+
 export async function readOne($: EngineInterface, url: string, id: string): Promise<Ask | null> {
   const docs = parseDocs(await call($, url, { action: 'get', doc_id: id }))
   const doc = docs.find(d => d.id === id) ?? docs[0]
@@ -342,6 +350,26 @@ export function nameFromPrompt(text: string): string {
     .replace(/\s+/g, ' ')
     .trim()
   return line.length > 50 ? `${line.slice(0, 49).trimEnd()}…` : line
+}
+
+/**
+ * A session's name from its transcript's title lines (grep output of
+ * `"customTitle":"..."` / `"aiTitle":"..."`): the last name the person gave it,
+ * else the last one generated; '' when there are none.
+ */
+export function titleFromTranscript(lines: string): string {
+  let custom = ''
+  let ai = ''
+  for (const line of lines.split('\n')) {
+    try {
+      const o = JSON.parse(`{${line.trim()}}`) as { customTitle?: unknown; aiTitle?: unknown }
+      if (typeof o.customTitle === 'string' && o.customTitle.trim()) custom = o.customTitle.trim()
+      if (typeof o.aiTitle === 'string' && o.aiTitle.trim()) ai = o.aiTitle.trim()
+    } catch {
+      continue
+    }
+  }
+  return (custom || ai).slice(0, 80)
 }
 
 export function age(iso: string, now: number): string {

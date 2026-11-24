@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { bandText, byPriority, nameFromPrompt, ordered, parseDocs, sessionLabel, triageChanges, triageDue } from '../hooks/db'
+import { bandText, byPriority, nameFromPrompt, ordered, parseDocs, sessionLabel, titleFromTranscript, triageChanges, triageDue } from '../hooks/db'
 import type { Ask } from '../types'
 
 const URL = 'https://claude.ai/artifact/HNv6tEtKy3rXX2QzkVqRHs'
@@ -394,6 +394,11 @@ test('sessions are named by title, else first prompt, never by id', () => {
   expect(sessionLabel({ sessionName: '', sessionStarted: '2026-11-19T14:05:00', createdAt: '' })).toBe('session from 11-19 14:05')
   expect(nameFromPrompt('<system-reminder>x</system-reminder>  fix the   router\nplease')).toBe('fix the router please')
   expect(nameFromPrompt('a'.repeat(80))).toHaveLength(50)
+  // /qs names: the latest name the person gave wins over generated ones
+  const lines = ['"aiTitle":"Router slowdown"', '"customTitle":"router \\"swap\\""', '"aiTitle":"Later guess"'].join('\n')
+  expect(titleFromTranscript(lines)).toBe('router "swap"')
+  expect(titleFromTranscript('"aiTitle":"Only generated"\n')).toBe('Only generated')
+  expect(titleFromTranscript('')).toBe('')
 })
 
 test('without a list page: setup hint on the band, tools refuse, /qs setup <link> stores it', async ($, on) => {

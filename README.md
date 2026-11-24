@@ -57,6 +57,15 @@ goes into one list on your claude.ai account, with the count kept in sight.
 At the prompt of a terminal session: `/plugin install qs --marketplace matthandlersux/claude-todo-naglist`.
 From a shell: `claude plugin install qs --marketplace matthandlersux/claude-todo-naglist`.
 
+### Updating from 0.1
+
+0.1 kept everyone's q's on one built-in page; 0.2 has no default page. After updating, run these once:
+
+1. `/qs setup <your page's link>` to keep using the page you had (the link the pane showed, `https://claude.ai/artifact/...`). Skip it to start a fresh page with `/qs setup`.
+2. `/qs names` to give your older q's their sessions' names (each session's title, read from the transcripts Claude Code keeps on this computer) instead of "session from <date>". q's from sessions on another computer, or whose transcripts were deleted, keep the date label.
+
+New q's get names by themselves. Your phone page shows the new names and groups once it runs 0.2's page: `/qs setup` with no link makes a new page; to update the one you have, ask Claude to republish `page/asks.html` from the plugin folder to your page's link.
+
 To stop using it: `/plugin uninstall qs` (your list stays on the claude.ai page).
 
 ## Allow ArtifactData
@@ -74,6 +83,7 @@ the normal permission check. The first time, you'll be asked: choose to always a
 | `/qs done <n>` | Mark this session's item number `n` done (numbers as the pane shows them, in priority order) |
 | `/qs dismiss <n>` | Dismiss item `n` |
 | `/qs triage` | Re-rank every open ask now |
+| `/qs names` | Give older q's their session's name (from its title) instead of "session from <date>"; run once after updating from 0.1 |
 | `/qs off` | Stop capturing in this session: no prompt note, no sweep, no band; the tools answer that capture is off |
 | `/qs on` | Turn it back on (on is the default) |
 

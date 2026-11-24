@@ -25,10 +25,12 @@ import {
   readUndelivered,
   newId,
   parseSweep,
+  readAll,
   readOpen,
   readTriageMeta,
   sessionAsks,
   sessionLabel,
+  titleFromTranscript,
   triageChanges,
   triageDue,
   writeChanges,
@@ -234,6 +236,34 @@ async function sessionName($: EngineInterface): Promise<string> {
     }
   }
   return promptName
+}
+
+/**
+ * Names q's filed before sessions had names, from each session's saved transcript
+ * under the Claude config folder (its latest title). Returns a line for the person.
+ */
+async function nameOldSessions($: EngineInterface): Promise<string> {
+  const unnamed = (await readAll($, url)).filter(a => !a.sessionName && a.sessionId)
+  if (unnamed.length === 0) return "Every q already has a session name."
+  const home = await $.process.run(['sh', '-c', 'printf %s "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"'])
+  const projects = `${home.stdout.trim()}/projects`
+  const changes: { ask: Ask; data: Record<string, unknown> }[] = []
+  let missing = 0
+  for (const sessionId of new Set(unnamed.map(a => a.sessionId))) {
+    if (!/^[\w-]+$/.test(sessionId)) continue
+    const found = await $.process.run(
+      ['grep', '-rhoE', '--include', `${sessionId}.jsonl`, '"(customTitle|aiTitle)":"([^"\\\\]|\\\\.)*"', projects],
+      { timeoutMs: 60_000 },
+    )
+    const name = titleFromTranscript(found.stdout)
+    const asks = unnamed.filter(a => a.sessionId === sessionId)
+    if (!name) missing += asks.length
+    else for (const ask of asks) changes.push({ ask, data: { sessionName: name } })
+  }
+  if (changes.length > 0) await writeChanges($, url, changes)
+  await refresh($)
+  const left = missing ? ` ${missing} left as "session from <date>": no title found on this computer.` : ''
+  return `Named ${changes.length} q's from their sessions' titles.${left}`
 }
 
 async function sweep($: EngineInterface, answer: string) {
@@ -506,8 +536,8 @@ export const register: Register = (on, rawOptions) => {
     })).tool
     await $.command.register({
       name: 'qs',
-      description: "Show the things Claude left for you (q's); /qs setup, /qs done|dismiss <n>, /qs triage, /qs off|on",
-      argumentHint: '[setup [url] | done <n> | dismiss <n> | triage | off | on]',
+      description: "Show the things Claude left for you (q's); /qs setup, /qs done|dismiss <n>, /qs triage, /qs names, /qs off|on",
+      argumentHint: '[setup [url] | done <n> | dismiss <n> | triage | names | off | on]',
     })
     // answers picked on the phone page reach this conversation within a minute
     $.clock.every(60_000, () => void deliverAnswers($).catch(err => fail($, 'delivering answers failed', err)))
@@ -701,7 +731,15 @@ export const register: Register = (on, rawOptions) => {
       }
     }
     if (verb === 'triage') return { text: await maybeTriage($, true) }
-    return { text: 'Usage: /qs  |  /qs setup [url]  |  /qs done <n>  |  /qs dismiss <n>  |  /qs triage  |  /qs off  |  /qs on' }
+    if (verb === 'names') {
+      try {
+        return { text: await nameOldSessions($) }
+      } catch (err) {
+        fail($, '/qs names failed', err)
+        return { text: `Could not name them: ${err instanceof Error ? err.message : String(err)}` }
+      }
+    }
+    return { text: 'Usage: /qs  |  /qs setup [url]  |  /qs done <n>  |  /qs dismiss <n>  |  /qs triage  |  /qs names  |  /qs off  |  /qs on' }
   })
 
   // ---- the band above the prompt ---------------------------------------------

@@ -1,6 +1,6 @@
 {
   "name": "qs",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "MIT",
   "description": "Captures every to-do, decision and question (q) a Claude session leaves for you into one list on your claude.ai account, and keeps it visible above the prompt.",
   "author": {
@@ -16,8 +16,8 @@
     },
     "sweep": {
       "type": "boolean",
-      "title": "Catch q's Claude forgot to file",
-      "description": "On: after each longer reply, a small model (Haiku) rereads it and files anything left for you that Claude didn't add itself. Costs one small model call per reply. Off: only what Claude files.",
+      "title": "Double-check the list after each reply",
+      "description": "On: after a reply, a small model (Haiku) rereads it, files anything left for you that Claude didn't add itself, and closes this session's q's that the reply or your message settled. Costs one small model call per reply (longer replies, and any reply while this session has open q's). Off: only what Claude files and closes itself.",
       "default": true,
       "required": false
     }

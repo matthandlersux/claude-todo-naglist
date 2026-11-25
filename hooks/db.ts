@@ -9,6 +9,8 @@ export const COLLECTION = 'asks'
 export const KINDS: readonly AskKind[] = ['do', 'decide', 'answer']
 export const URGENCIES: readonly AskUrgency[] = ['now', 'soon', 'later']
 /** The triage pass's bookkeeping: one doc, so sessions don't all run it at once. */
+/** A q's title is cut to this many characters; the rest belongs in its detail. */
+export const TEXT_MAX = 80
 export const META_COLLECTION = 'asksMeta'
 export const TRIAGE_DOC = 'triage'
 
@@ -100,6 +102,7 @@ export function toAsk(doc: RawDoc): Ask | null {
     id: doc.id,
     version: doc.version,
     text,
+    detail: str(d.detail),
     kind,
     status,
     folder: str(d.folder),
@@ -406,12 +409,53 @@ function jsonArray(text: string): unknown[] {
   }
 }
 
-/** Parses the sweep model's reply: a JSON array of { text, kind, urgency, ignorable, blocks }. */
-export function parseSweep(text: string): ({ text: string; kind: AskKind; options: string[] } & Judged)[] {
+/**
+ * A title that fits: one over TEXT_MAX is cut at a word and kept whole at the top of the detail,
+ * so nothing a small model wrote too long is lost.
+ */
+export function fitTitle(text: string, detail: string): { text: string; detail: string } {
+  const title = text.replace(/\s+/g, ' ').trim()
+  const more = detail.trim().slice(0, 1500)
+  if (title.length <= TEXT_MAX) return { text: title, detail: more }
+  const cut = title.slice(0, TEXT_MAX - 1)
+  const at = cut.lastIndexOf(' ')
+  return { text: `${(at > 40 ? cut.slice(0, at) : cut).trimEnd()}…`, detail: more ? `${title}\n${more}` : title }
+}
+
+export type Swept = {
+  found: ({ text: string; detail: string; kind: AskKind; options: string[] } & Judged)[]
+  closed: { id: string; status: 'done' | 'dismissed' }[]
+}
+
+/**
+ * Parses the sweep model's reply: { "close": [{ id, status }], "file": [{ text, detail, kind, ... }] }
+ * (a bare array is read as "file"). Only ids in `openIds` can be closed.
+ */
+export function parseSweepReply(text: string, openIds: readonly string[]): Swept {
+  const brace = text.indexOf('{')
+  const bracket = text.indexOf('[')
+  if (brace < 0 || (bracket >= 0 && bracket < brace)) return { found: parseSweep(text), closed: [] }
+  let o: { close?: unknown; file?: unknown }
+  try {
+    o = JSON.parse(text.slice(brace, text.lastIndexOf('}') + 1)) as { close?: unknown; file?: unknown }
+  } catch {
+    return { found: [], closed: [] }
+  }
+  const closed: Swept['closed'] = []
+  for (const c of Array.isArray(o.close) ? o.close : []) {
+    const id = (c as { id?: unknown } | null)?.id
+    if (typeof id !== 'string' || !openIds.includes(id) || closed.some(x => x.id === id)) continue
+    closed.push({ id, status: (c as { status?: unknown }).status === 'dismissed' ? 'dismissed' : 'done' })
+  }
+  return { found: parseSweep(JSON.stringify(Array.isArray(o.file) ? o.file : [])), closed }
+}
+
+/** Parses the sweep model's list of things to file: a JSON array of { text, detail, kind, urgency, ignorable, blocks }. */
+export function parseSweep(text: string): Swept['found'] {
   return jsonArray(text)
     .filter((o): o is { text: string; kind?: unknown; urgency?: unknown; ignorable?: unknown; blocks?: unknown } => !!o && typeof (o as { text?: unknown }).text === 'string' && (o as { text: string }).text.trim() !== '')
     .map(o => ({
-      text: o.text.trim().slice(0, 300),
+      ...fitTitle(o.text, str((o as { detail?: unknown }).detail)),
       kind: KINDS.includes(o.kind as AskKind) ? (o.kind as AskKind) : 'do',
       options: cleanOptions((o as { options?: unknown }).options),
       ...judged(o),

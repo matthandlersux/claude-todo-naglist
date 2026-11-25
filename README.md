@@ -42,8 +42,15 @@ goes into one list on your claude.ai account, with the count kept in sight.
   2-3 buttons, e.g. **Push** / **Not yet**. Click one in the pane or on your phone: the q closes with that
   answer and the session that filed it gets it as your reply and carries on. From the phone it arrives within
   a minute (each session checks once a minute); a closed session gets it when you resume it.
-- **Safety net.** After each longer reply a cheap model call (haiku) checks for q's Claude forgot to file
-  and adds them (marked `sweep`). It never holds up the turn. Can be switched off.
+- **Short titles, context underneath.** Each q is a title to skim (5-10 words; over 80 characters is refused)
+  plus a `detail`: what it refers to, why, and any link, path or command, written for when you have
+  forgotten the conversation. The pane and the phone page show the detail under the title.
+- **Sessions clean up after themselves.** Each message you send carries a note of that session's open q's,
+  so Claude closes what you just said is done, and what its own work settled, without being asked.
+- **Safety net.** After a reply a cheap model call (haiku) checks for q's Claude forgot to file and adds
+  them, and closes this session's q's that your message or the reply plainly settled (both marked `sweep`).
+  It runs after longer replies and after any reply while the session has open q's. It never holds up the
+  turn. Can be switched off.
 - **Always visible.** A line above the prompt: `📌 3 q's for you · 1 do · 1 decide · 1 answer   (7 in this folder)   /qs`.
   Nothing shows when there are none.
 - **A pane** (`/qs`): Session / Folder / All tabs, in priority order (urgency, then not-ignorable, then the
@@ -56,6 +63,12 @@ goes into one list on your claude.ai account, with the count kept in sight.
 
 At the prompt of a terminal session: `/plugin install qs --marketplace matthandlersux/claude-todo-naglist`.
 From a shell: `claude plugin install qs --marketplace matthandlersux/claude-todo-naglist`.
+
+### Updating from 0.2
+
+- Run `/qs names` once: q's that were named after a session's first message get the session's title.
+- Ask Claude to republish `page/asks.html` from the plugin folder to your page's link, so your phone shows each q's detail.
+- q's filed before 0.3 keep their long titles and have no detail.
 
 ### Updating from 0.1
 
@@ -83,7 +96,7 @@ the normal permission check. The first time, you'll be asked: choose to always a
 | `/qs done <n>` | Mark this session's item number `n` done (numbers as the pane shows them, in priority order) |
 | `/qs dismiss <n>` | Dismiss item `n` |
 | `/qs triage` | Re-rank every open ask now |
-| `/qs names` | Give older q's their session's name (from its title) instead of "session from <date>"; run once after updating from 0.1 |
+| `/qs names` | Put each session's title on its q's, replacing "session from <date>" and names taken from a first message; run once after updating |
 | `/qs off` | Stop capturing in this session: no prompt note, no sweep, no band; the tools answer that capture is off |
 | `/qs on` | Turn it back on (on is the default) |
 
@@ -96,12 +109,12 @@ the normal permission check. The first time, you'll be asked: choose to always a
 
 ## How it stores things
 
-One document per q in the page's `asks` collection (the name predates the rename): `text`, `kind` (do/decide/answer), `status`
+One document per q in the page's `asks` collection (the name predates the rename): `text` (the title), `detail` (the context), `kind` (do/decide/answer), `status`
 (open/done/dismissed), `folder` (the git root, else the working directory), `folderName`, `sessionId`,
-`sessionName` (the session's title when Claude Code reports one), `sessionStarted`, `createdAt`,
-`closedAt`, `closedBy` (session/pane/page), `source` (tool/sweep), `urgency` (now/soon/later),
+`sessionName` (the session's title), `sessionStarted`, `createdAt`,
+`closedAt`, `closedBy` (session/pane/page/sweep), `source` (tool/sweep), `urgency` (now/soon/later),
 `ignorable`, `blocks`, `options` (reply buttons), `answer`, `answeredAt`, `deliveredAt`, `rank` (the last triage's position, null until triaged), `triagedAt`, `group` (task tag, '' for none), `step` (place in the group).
-Sessions are named by their title, else the first line of their first prompt (`sessionName`).
+Sessions are named by their title (the one you gave, else the one Claude Code generated, read from the session's transcript), and by the first line of their first prompt only until a title exists (`sessionName`).
 Collection `asksMeta`, doc `triage`: `lastRun`, `runningUntil` (the claim). The database is the truth; the
 session keeps a cache of the open ones, refreshed when the pane opens, after each write, at the start
 and end of every turn, and every minute while the pane is open.

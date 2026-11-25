@@ -50,6 +50,7 @@ li.closed .text { text-decoration: line-through; }
 .urg { font-family: var(--font-mono); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 6px; }
 .urg.now { color: var(--now); } .urg.soon { color: var(--decide); } .urg.later { color: var(--muted); }
 li.ignorable .text { color: var(--muted); }
+.detail { grid-column: 2; font-size: 14px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .why { grid-column: 2; font-size: 13px; color: var(--muted); }
 .group { grid-column: 2; justify-self: start; font-family: var(--font-mono); font-size: 12px; color: var(--accent); }
 .text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -206,6 +207,7 @@ function item(a, flat) {
     : a.answer ? "Answered \u201c" + a.answer + "\u201d " + when(a.closedAt) + (a.deliveredAt ? " · sent to the session" : " · waiting for the session")
     : (a.status === "done" ? "Done " : "Dismissed ") + when(a.closedAt);
   const why = a.ignorable === true ? "Ignorable: nothing waits on it" : a.blocks ? "Blocks: " + a.blocks : "";
+  if (a.detail) li.append(el("span", { class: "detail" }, a.detail));
   if (why) li.append(el("span", { class: "why" }, why));
   if (a.group) li.append(el("span", { class: "group" }, a.group + (stepOf(a) !== Infinity ? " · step " + a.step : "")));
   const where = flat ? " · " + (a.folderName || a.folder || "") + " / " + sessionLabel(a) : "";

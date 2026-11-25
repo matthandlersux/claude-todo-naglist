@@ -24,12 +24,13 @@ import {
   nameFromPrompt,
   readUndelivered,
   newId,
-  parseSweep,
+  parseSweepReply,
   readAll,
   readOpen,
   readTriageMeta,
   sessionAsks,
   sessionLabel,
+  TEXT_MAX,
   titleFromTranscript,
   triageChanges,
   triageDue,
@@ -56,18 +57,25 @@ const TOOL = { add: 'qs_add', resolve: 'qs_resolve', list: 'qs_list', order: 'qs
 const MATCH = { add: /__qs_add$/, resolve: /__qs_resolve$/, list: /__qs_list$/, order: /__qs_order$/ }
 
 const promptSection = () => `# Q's for the user (qs mod)
-Whenever a reply leaves the user something to do, decide or answer, file each one with the \`${TOOL.add}\` tool as part of that reply: one call per item, kind "do", "decide" or "answer", and a short imperative text that makes sense on its own, away from this conversation (name the repo, file, server or thing it is about, and copy in any link, path or command the user needs to act on it).
+Whenever a reply leaves the user something to do, decide or answer, file each one with the \`${TOOL.add}\` tool as part of that reply: one call per item, kind "do", "decide" or "answer". Each q has two parts:
+- text: the title the user skims in a list. 5-10 words, imperative, naming the thing it is about ("Approve pushing acme-api v2.3"). At most ${TEXT_MAX} characters; longer is refused. No reasons, steps, paths or commands here.
+- detail: everything else, written for someone who has forgotten this conversation: what it refers to (repo, file, server, site), why it is needed, and any link, path or command the user needs to act on it. One to three sentences.
 Every ask needs your best guess at two things, even when unsure:
 - urgency (time): "now" if it matters today or something is waiting on it right now, "soon" for this week, "later" if there is no clock on it.
 - ignorable: true only if nothing real is tied to it, blocked on it or half done, so it could sit forever without harm. When false, say in blocks what it blocks, is tied to, or what is half done.
 - options: when the user's part is just clicking a button (approve a push or deploy, pick A or B, yes/no), give the 2-3 short button labels, e.g. ["Push", "Not yet"]. Their click comes back to this session as a message; then do what it says.
 When several q's belong to one task, or must be done in a set order (steps of a fix, things to try in turn), give them the same group (a short kebab-case tag for the task, e.g. "router-swap") and step numbers 1, 2, 3 in the order the user should do them; they are then listed together in that order. To group or reorder q's already filed, call \`${TOOL.order}\` with their ids in order.
 Don't file what you will do yourself, and don't file generic offers like "let me know if you want more".
-When the user says they did an item, or answers or decides it, close it with \`${TOOL.resolve}\` (status "done", or "dismissed" when it no longer applies).
+Keeping the list clean is your job, not the user's: they should never have to ask you to clear q's. In the same turn that any of these happens, close the q with \`${TOOL.resolve}\` without being asked: the user says they did it, answers it or decides it (status "done"); you did it yourself, or your work made it unnecessary; the plan changed and it no longer applies ("dismissed"); a newer q replaces it ("dismissed", then file the new one). Each user message comes with a note of this session's open q's and their ids: check it against what the user just said and what you did this turn.
 Don't re-file an item that is still open: check \`${TOOL.list}\` (this session's open q's with their ids) when unsure.`
 
 const SWEEP_SYSTEM =
-  'You find what an assistant reply leaves for the USER to do, decide or answer. You answer with a JSON array only.'
+  "You keep a list of what an assistant leaves for the USER to do, decide or answer: you spot new items in its latest reply, and open items the latest exchange settled. You answer with one JSON object only."
+
+/** The note a user message carries while this session has open q's, so the model closes what the turn settles. */
+const openNote = (mine: readonly Ask[]) => `q's still open from this session (qs mod):
+${mine.slice(0, 20).map(a => `- ${a.id} · ${a.text}`).join('\n')}
+If this message says any of them is done, answered, decided or no longer needed, or your work this turn settles one, close it with \`${TOOL.resolve}\` in this turn, without being asked. Leave the rest, and don't mention this note.`
 
 type Options = { artifactUrl: string; sweep: boolean }
 
@@ -77,6 +85,9 @@ let url = ''
 const STORE_URL = 'artifactUrl'
 // The session's name from its first prompt, for sessions the engine reports no title for.
 let promptName = ''
+// This session's transcript file (from the classic hook events) and the last title read from it.
+let transcriptPath = ''
+let transcriptName = ''
 
 // ---- where this session is, and the cache -----------------------------
 
@@ -121,7 +132,7 @@ async function fileAsk(
   judgement: Judged,
   source: 'tool' | 'sweep',
   options: string[] = [],
-  place: { group: string; step: number | null } = { group: '', step: null },
+  more: { group?: string; step?: number | null; detail?: string } = {},
 ): Promise<Ask> {
   if (!url) throw new Error(NOT_SET_UP)
   const here = await locate($)
@@ -136,6 +147,7 @@ async function fileAsk(
     id: newId(now),
     version: 0,
     text: text.trim(),
+    detail: (more.detail ?? '').trim(),
     kind,
     status: 'open',
     folder: here.folder,
@@ -153,7 +165,8 @@ async function fileAsk(
     options,
     answer: null,
     deliveredAt: null,
-    ...place,
+    group: more.group ?? '',
+    step: more.step ?? null,
   }
   ask.version = await create($, url, ask)
   await update($, asksAtom, list => [...list.filter(a => a.id !== ask.id), ask])
@@ -206,24 +219,48 @@ const same = (a: string, b: string) =>
   a.toLowerCase().replace(/\W+/g, ' ').trim() === b.toLowerCase().replace(/\W+/g, ' ').trim()
 
 
-// The session's title, where the engine reports one.
-// A new title also renames this session's open q's, so the pane and page show it.
-const keepTitle = async ($: EngineInterface, title: unknown) => {
-  if (typeof title !== 'string' || title.trim() === '' || title.trim() === (await read($, titleAtom))) return
-  const name = title.trim()
-  await update($, titleAtom, () => name)
+const TITLE_LINES = '"(customTitle|aiTitle)":"([^"\\\\]|\\\\.)*"'
+
+// The session's title, where the engine reports one, and where its transcript is kept.
+const keepTitle = async ($: EngineInterface, e: { session_title?: unknown; transcript_path?: unknown }) => {
+  if (typeof e.transcript_path === 'string' && e.transcript_path) transcriptPath = e.transcript_path
+  const title = e.session_title
+  if (typeof title === 'string' && title.trim() !== '') await update($, titleAtom, () => title.trim())
+  await syncName($)
+}
+
+/** Renames this session's open q's when its name has changed (a title arrived, or was edited). */
+async function syncName($: EngineInterface) {
   const here = await read($, hereAtom)
   if (!url || !here) return
-  const stale = (await read($, asksAtom)).filter(a => a.sessionId === here.sessionId && a.sessionName !== name)
-  if (stale.length === 0) return
+  const mine = (await read($, asksAtom)).filter(a => a.sessionId === here.sessionId)
+  if (mine.length === 0) return
+  const name = await sessionName($)
+  const stale = mine.filter(a => a.sessionName !== name)
+  if (!name || stale.length === 0) return
   await writeChanges($, url, stale.map(ask => ({ ask, data: { sessionName: name } })))
     .then(() => refresh($))
     .catch(err => fail($, 'renaming the session on its q\'s failed', err))
 }
 
-/** The session's title, else a short name from its first prompt; never its id. */
+/**
+ * The title in this session's transcript: the name the person gave it, else the one Claude Code
+ * generated (which the hook events don't carry). The last one found is kept when a read fails.
+ */
+async function transcriptTitle($: EngineInterface): Promise<string> {
+  if (!transcriptPath) return transcriptName
+  try {
+    const found = await $.process.run(['grep', '-oE', TITLE_LINES, transcriptPath], { timeoutMs: 10_000 })
+    transcriptName = titleFromTranscript(found.stdout) || transcriptName
+  } catch {
+    // no transcript yet, or no grep: the earlier name stands
+  }
+  return transcriptName
+}
+
+/** The session's name: its title (given or generated), else a short name from its first prompt; never its id. */
 async function sessionName($: EngineInterface): Promise<string> {
-  const title = await read($, titleAtom)
+  const title = (await read($, titleAtom)) || (await transcriptTitle($))
   if (title) return title
   if (!promptName) {
     try {
@@ -239,53 +276,71 @@ async function sessionName($: EngineInterface): Promise<string> {
 }
 
 /**
- * Names q's filed before sessions had names, from each session's saved transcript
- * under the Claude config folder (its latest title). Returns a line for the person.
+ * Puts each session's title on its q's: those filed before sessions had names, and those named
+ * from a first prompt before the session had a title. Titles come from the saved transcripts
+ * under the Claude config folder. Returns a line for the person.
  */
 async function nameOldSessions($: EngineInterface): Promise<string> {
-  const unnamed = (await readAll($, url)).filter(a => !a.sessionName && a.sessionId)
-  if (unnamed.length === 0) return "Every q already has a session name."
+  const all = (await readAll($, url)).filter(a => a.sessionId)
   const home = await $.process.run(['sh', '-c', 'printf %s "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"'])
   const projects = `${home.stdout.trim()}/projects`
   const changes: { ask: Ask; data: Record<string, unknown> }[] = []
   let missing = 0
-  for (const sessionId of new Set(unnamed.map(a => a.sessionId))) {
+  for (const sessionId of new Set(all.map(a => a.sessionId))) {
     if (!/^[\w-]+$/.test(sessionId)) continue
-    const found = await $.process.run(
-      ['grep', '-rhoE', '--include', `${sessionId}.jsonl`, '"(customTitle|aiTitle)":"([^"\\\\]|\\\\.)*"', projects],
-      { timeoutMs: 60_000 },
-    )
+    const found = await $.process.run(['grep', '-rhoE', '--include', `${sessionId}.jsonl`, TITLE_LINES, projects], {
+      timeoutMs: 60_000,
+    })
     const name = titleFromTranscript(found.stdout)
-    const asks = unnamed.filter(a => a.sessionId === sessionId)
-    if (!name) missing += asks.length
-    else for (const ask of asks) changes.push({ ask, data: { sessionName: name } })
+    const asks = all.filter(a => a.sessionId === sessionId)
+    if (!name) missing += asks.filter(a => !a.sessionName).length
+    else for (const ask of asks) if (ask.sessionName !== name) changes.push({ ask, data: { sessionName: name } })
   }
   if (changes.length > 0) await writeChanges($, url, changes)
   await refresh($)
   const left = missing ? ` ${missing} left as "session from <date>": no title found on this computer.` : ''
-  return `Named ${changes.length} q's from their sessions' titles.${left}`
+  return changes.length === 0 && !missing
+    ? "Every q already has its session's title."
+    : `Named ${changes.length} q's from their sessions' titles.${left}`
 }
 
+/**
+ * The after-turn safety net, one small-model call: closes this session's open q's that the
+ * last exchange settled, and files what the reply left for the user that nobody filed.
+ */
 async function sweep($: EngineInterface, answer: string) {
   const open = await refresh($).catch(() => read($, asksAtom))
   const here = await read($, hereAtom)
-  const filed = sessionAsks(open, here)
-    .map(a => `- (${a.kind}) ${a.text}`)
-    .join('\n')
-  const prompt = `Assistant reply:
+  const mine = sessionAsks(open, here)
+  const filed = mine.map(a => `- ${a.id} (${a.kind}) ${a.text}${a.detail ? ` — ${a.detail.slice(0, 200)}` : ''}`).join('\n')
+  let said = ''
+  try {
+    said = (await $.session.messages()).filter(m => m.role === 'user').at(-1)?.text ?? ''
+  } catch {
+    said = ''
+  }
+  const prompt = `The user's last message:
+<<<
+${said.slice(-2000) || '(not available)'}
+>>>
+
+The assistant's reply to it:
 <<<
 ${answer.slice(-6000)}
 >>>
 
-Already filed and open:
+Open items, already on the user's list:
 ${filed || '(none)'}
 
-List each thing this reply leaves the USER to do, decide or answer that is NOT already filed (the same meaning counts as filed). Skip what the assistant will do itself, and generic offers ("let me know if..."). Each item: {"options": 2-3 short button labels when the user's part is just picking or approving (e.g. ["Push", "Not yet"]), else [], "text": short imperative that makes sense on its own (copy in any link, path or command from the reply that the user needs to act on it), "kind": "do" | "decide" | "answer", "urgency": "now" (today, or something waits on it) | "soon" (this week) | "later" (no clock), "ignorable": true only if nothing real is tied to it, blocked on it or half done, "blocks": what it blocks or what is half done ("" when ignorable)}. Always guess urgency and ignorable. Answer with a JSON array only; [] when there is nothing.`
+Answer with one JSON object: {"close": [...], "file": [...]}.
+"close": the open items this exchange settled. An item is settled only when the user's message or the reply says plainly that it was done, answered, decided, or no longer applies (the plan changed, something replaced it). Each: {"id", "status": "done" | "dismissed" (no longer applies)}. When unsure, leave it open: a wrong close hides something the user still has to do.
+"file": each thing the reply leaves the USER to do, decide or answer that is NOT already an open item (the same meaning counts as filed). Skip what the assistant will do itself, and generic offers ("let me know if..."). Each: {"text": a title to skim, 5-10 words, imperative, naming the thing it is about, at most ${TEXT_MAX} characters, "detail": one to three sentences for someone who has forgotten the conversation: what it refers to, why, and any link, path or command from the reply needed to act on it, "options": 2-3 short button labels when the user's part is just picking or approving (e.g. ["Push", "Not yet"]), else [], "kind": "do" | "decide" | "answer", "urgency": "now" (today, or something waits on it) | "soon" (this week) | "later" (no clock), "ignorable": true only if nothing real is tied to it, blocked on it or half done, "blocks": what it blocks or what is half done ("" when ignorable)}. Always guess urgency and ignorable.
+Both lists are [] when there is nothing.`
   const r = await $.model.complete({
     model: 'haiku',
     system: SWEEP_SYSTEM,
     prompt,
-    maxTokens: 800,
+    maxTokens: 1200,
     effort: 'low',
     timeoutMs: 45_000,
   })
@@ -293,11 +348,24 @@ List each thing this reply leaves the USER to do, decide or answer that is NOT a
     $.ui.log(`${PLUGIN}: sweep got no answer (${r.reason})`, { to: 'debug' })
     return
   }
-  const found = parseSweep(r.text)
-  const mine = sessionAsks(await read($, asksAtom), here)
+  const { found, closed } = parseSweepReply(r.text, mine.map(a => a.id))
+  let closedCount = 0
+  for (const c of closed) {
+    // only what is still open: the model may have closed it itself while this ran
+    const ask = (await read($, asksAtom)).find(a => a.id === c.id)
+    if (!ask) continue
+    try {
+      await resolveAsk($, ask, c.status, 'sweep')
+      closedCount++
+    } catch (err) {
+      if (!(err instanceof DbError && err.isConflict)) fail($, 'closing a settled q failed', err)
+    }
+  }
+  if (closedCount > 0) $.ui.toast(`q's: closed ${closedCount} that this turn settled`)
+  const now = sessionAsks(await read($, asksAtom), here)
   for (const item of found) {
-    if (mine.some(a => same(a.text, item.text))) continue
-    await fileAsk($, item.text, item.kind, item, 'sweep', item.options)
+    if (now.some(a => same(a.text, item.text))) continue
+    await fileAsk($, item.text, item.kind, item, 'sweep', item.options, { detail: item.detail })
   }
   void maybeTriage($, false)
 }
@@ -339,6 +407,7 @@ async function maybeTriage($: EngineInterface, force: boolean): Promise<string> 
       JSON.stringify({
         id: a.id,
         text: a.text,
+        ...(a.detail ? { detail: a.detail.slice(0, 200) } : {}),
         kind: a.kind,
         urgency: a.urgency,
         ignorable: a.ignorable,
@@ -461,7 +530,15 @@ export const register: Register = (on, rawOptions) => {
       inputSchema: {
         type: 'object',
         properties: {
-          text: { type: 'string', description: 'Short imperative, self-contained (names the thing it is about).' },
+          text: {
+            type: 'string',
+            description: `The title the user skims: 5-10 words, imperative, naming the thing it is about. At most ${TEXT_MAX} characters (longer is refused); no reasons, steps, paths or commands.`,
+          },
+          detail: {
+            type: 'string',
+            description:
+              'The context, for someone who has forgotten this conversation: what it refers to (repo, file, server, site), why it is needed, and any link, path or command needed to act on it. One to three sentences.',
+          },
           kind: { type: 'string', enum: ['do', 'decide', 'answer'] },
           urgency: {
             type: 'string',
@@ -494,7 +571,7 @@ export const register: Register = (on, rawOptions) => {
               'Reply buttons when the user\'s part is just picking or approving, e.g. ["Push", "Not yet"]. Their click comes back to this session as a message. Include them whenever there is a simple action to approve.',
           },
         },
-        required: ['text', 'kind', 'urgency', 'ignorable'],
+        required: ['text', 'detail', 'kind', 'urgency', 'ignorable'],
       },
       isDeferred: false,
     })).tool
@@ -556,13 +633,18 @@ export const register: Register = (on, rawOptions) => {
   })
 
   on('classic.SessionStart', async ($, e, next) => {
-    await keepTitle($, e.session_title)
+    await keepTitle($, e)
     return next(e)
   })
     .catch(($, e, next) => next(e))
+  // each user message carries this session's open q's, so the model closes what the turn settles
   on('classic.UserPromptSubmit', async ($, e, next) => {
-    await keepTitle($, e.session_title)
-    return next(e)
+    await keepTitle($, e)
+    const result = await next(e)
+    if (!url || (await read($, offAtom))) return result
+    const mine = sessionAsks(await read($, asksAtom), await read($, hereAtom))
+    if (mine.length === 0) return result
+    return { ...result, additionalContext: [...(result.additionalContext ?? []), openNote(mine)] }
   })
     .catch(($, e, next) => next(e))
 
@@ -584,6 +666,7 @@ export const register: Register = (on, rawOptions) => {
     if (!url) return { result: NOT_SET_UP }
     const input = e as unknown as {
       text?: unknown
+      detail?: unknown
       kind?: unknown
       urgency?: unknown
       ignorable?: unknown
@@ -595,12 +678,18 @@ export const register: Register = (on, rawOptions) => {
     const text = typeof input.text === 'string' ? input.text.trim() : ''
     const kind: AskKind = input.kind === 'decide' || input.kind === 'answer' ? input.kind : 'do'
     if (!text) return { result: 'Nothing filed: text is empty.' }
+    if (text.length > TEXT_MAX) {
+      return {
+        result: `Nothing filed: text is ${text.length} characters. It is the title the user skims: cut it to 5-10 words (${TEXT_MAX} characters at most) and move the rest into detail, then call again.`,
+      }
+    }
+    const detail = typeof input.detail === 'string' ? input.detail.trim().slice(0, 1500) : ''
     const here = await locate($)
     const dup = sessionAsks(await read($, asksAtom), here).find(a => same(a.text, text))
     if (dup) return { result: `Already open as ${dup.id}; not filed again.` }
     try {
       const group = cleanGroup(input.group)
-      const place = { group, step: group ? cleanStep(input.step) : null }
+      const place = { group, step: group ? cleanStep(input.step) : null, detail }
       const ask = await fileAsk($, text, kind, judged(input), 'tool', cleanOptions(input.options), place)
       const where = group ? `, ${group}${ask.step ? ` step ${ask.step}` : ''}` : ''
       return { result: `Filed ${ask.id} (${kind}, ${ask.urgency}${ask.ignorable ? ', ignorable' : ''}${where}).` }
@@ -673,6 +762,7 @@ export const register: Register = (on, rawOptions) => {
         `${a.id} · ${a.urgency}${a.ignorable ? ' · ignorable' : ''} · ${a.kind}` +
         (a.group ? ` · ${a.group}${a.step ? ` #${a.step}` : ''}` : '') +
         ` · ${a.text}` +
+        (a.detail ? ` — ${a.detail.slice(0, 200)}` : '') +
         (a.blocks ? ` [blocks: ${a.blocks}]` : '') +
         (scope === 'session' || scope === undefined ? '' : ` (${a.folderName || a.folder})`),
     )
@@ -690,9 +780,13 @@ export const register: Register = (on, rawOptions) => {
     if (e.agentId !== undefined) return next(e)
     const isOff = await read($, offAtom)
     const answer = e.answer
-    const wantsSweep = !isOff && options.sweep && e.reason === 'answer' && mightHoldAsks(answer)
+    // worth a look when the reply may leave something, or this session has q's the turn may have settled
+    const hasOpen = sessionAsks(await read($, asksAtom), await read($, hereAtom)).length > 0
+    const wantsSweep = !isOff && options.sweep && e.reason === 'answer' && (hasOpen || mightHoldAsks(answer))
     $.clock.after(0, () => {
-      void (wantsSweep ? sweep($, answer) : refresh($)).catch(err => fail($, 'after-turn work failed', err))
+      void (wantsSweep ? sweep($, answer) : refresh($))
+        .then(() => syncName($))
+        .catch(err => fail($, 'after-turn work failed', err))
     })
     return next(e)
   })
@@ -839,6 +933,12 @@ export const register: Register = (on, rawOptions) => {
               <Text color={a.kind === 'do' ? 'cyan' : a.kind === 'decide' ? 'magenta' : 'yellow'}>[{a.kind}]</Text>{' '}
               {a.text} <Text dimColor>{age(a.createdAt, now)}</Text>
             </Text>
+            {a.detail !== '' && (
+              <Text dimColor wrap="wrap">
+                {'   '}
+                {a.detail.length > 240 ? `${a.detail.slice(0, 239)}…` : a.detail}
+              </Text>
+            )}
             <Text dimColor wrap="wrap">
               {'   '}
               {[a.group ? `${a.group}${a.step ? ` #${a.step}` : ''}` : '', a.ignorable ? 'ignorable' : a.blocks ? `blocks: ${a.blocks}` : '', where(a)]

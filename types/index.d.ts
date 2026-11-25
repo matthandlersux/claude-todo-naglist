@@ -10,7 +10,10 @@ export type AskUrgency = 'now' | 'soon' | 'later'
 export type Ask = {
   id: string
   version: number
+  /** The title: 5-10 words to skim, at most 80 characters. */
   text: string
+  /** The context behind the title: what it refers to, why, and any link, path or command; '' for none. */
+  detail: string
   kind: AskKind
   status: AskStatus
   folder: string

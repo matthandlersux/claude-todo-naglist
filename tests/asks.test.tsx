@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
-import { bandText, byPriority, nameFromPrompt, ordered, parseDocs, sessionLabel, titleFromTranscript, triageChanges, triageDue } from '../hooks/db'
+import { bandText, byPriority, fitTitle, nameFromPrompt, ordered, parseDocs, parseSweepReply, sessionLabel, TEXT_MAX, titleFromTranscript, triageChanges, triageDue } from '../hooks/db'
 import type { Ask } from '../types'
 
 const URL = 'https://claude.ai/artifact/HNv6tEtKy3rXX2QzkVqRHs'
@@ -74,6 +74,7 @@ async function start($: Engine) {
 }
 
 const base = {
+  detail: '',
   version: 1,
   status: 'open',
   folder: '/r',
@@ -439,4 +440,70 @@ test('qs_add takes a group and step; qs_order regroups open q\'s in the given or
     ['a-2', 'setup', 1, 5],
     ['a-1', 'setup', 2, 2],
   ])
+})
+
+test('titles stay short: a long one is cut and kept whole in the detail; the sweep reply closes only known ids', () => {
+  expect(fitTitle('Push  the release', ' why ')).toEqual({ text: 'Push the release', detail: 'why' })
+  const long = 'Rotate the staging database password and update the vault entry before the refresh on Friday morning'
+  const cut = fitTitle(long, 'See vault.')
+  expect(cut.text.length).toBeLessThanOrEqual(TEXT_MAX)
+  expect(cut.text.endsWith('…')).toBe(true)
+  expect(cut.detail).toBe(`${long}\nSee vault.`)
+
+  const reply = 'Here: {"close":[{"id":"a1","status":"done"},{"id":"zz","status":"done"},{"id":"a2","status":"dismissed"},{"id":"a1","status":"done"}],"file":[{"text":"Reboot nickel","detail":"Kernel update waits on it.","kind":"do","urgency":"soon","ignorable":false,"blocks":"the kernel update"}]}'
+  const swept = parseSweepReply(reply, ['a1', 'a2'])
+  expect(swept.closed).toEqual([{ id: 'a1', status: 'done' }, { id: 'a2', status: 'dismissed' }])
+  expect(swept.found.map(f => [f.text, f.detail])).toEqual([['Reboot nickel', 'Kernel update waits on it.']])
+  // the older bare-array reply still files
+  expect(parseSweepReply('[{"text":"Old shape","kind":"do"}]', ['a1']).found.map(f => f.text)).toEqual(['Old shape'])
+  expect(parseSweepReply('not json {', ['a1'])).toEqual({ found: [], closed: [] })
+})
+
+test('qs_add refuses a long title and stores the detail', { options: { artifactUrl: URL } }, async ($, on) => {
+  const calls = engine(on, okDb)
+  await start($)
+  const long = await $.tool.call({ tool: 'mcp__qs__qs_add', text: 'x'.repeat(TEXT_MAX + 1), detail: '', kind: 'do', urgency: 'soon', ignorable: false } as never)
+  expect(String(long.result)).toMatch(/Nothing filed: text is 81 characters/)
+  expect(calls.find(c => c.action === 'set')).toBeUndefined()
+  await $.tool.call({ tool: 'mcp__qs__qs_add', text: 'Reboot nickel', detail: 'The 7.0.0-38 kernel is installed but not running.', kind: 'do', urgency: 'soon', ignorable: false } as never)
+  const set = calls.find(c => c.action === 'set')
+  expect(set?.data?.text).toBe('Reboot nickel')
+  expect(set?.data?.detail).toBe('The 7.0.0-38 kernel is installed but not running.')
+})
+
+test('a session cleans up: each prompt carries its open q\'s, the transcript title names them, the sweep closes what a turn settled', { options: { artifactUrl: URL } }, async ($, on) => {
+  const docs = [
+    '{"id":"a-1","data":{"text":"Reboot nickel","kind":"do","status":"open","sessionId":"sess-1","sessionName":"reboot my computer pls","folder":"/home/m/repo"},"version":2}',
+    '{"id":"a-2","data":{"text":"Pick a router","kind":"decide","status":"open","sessionId":"sess-1","sessionName":"reboot my computer pls","folder":"/home/m/repo"},"version":5}',
+    '{"id":"b-1","data":{"text":"Someone else\'s","kind":"do","status":"open","sessionId":"other","folder":"/home/m/repo"},"version":1}',
+  ]
+  const calls = engine(on, e =>
+    e.action === 'batch' ? { text: 'Applied 2 writes.' } : e.action === 'update' ? { text: 'Updated at version 9.' } : { text: `BEGIN\n${docs.join('\n')}\nEND` },
+  )
+  on('process.run', (_, e) => ({ value: { exitCode: 0, stdout: e.argv.includes('/t/sess-1.jsonl') ? '"aiTitle":"Nickel upkeep"\n' : '', stderr: '' } }) as never)
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'rebooted, all good' }] }) as never)
+  on('classic.UserPromptSubmit', () => ({}) as never)
+  const asked: string[] = []
+  on('model.complete', (_, e) => {
+    asked.push(String(e.prompt))
+    return { value: { isAnswered: true, text: '{"close":[{"id":"a-1","status":"done"},{"id":"b-1","status":"done"}],"file":[]}' } } as never
+  })
+  on('turn.complete', (_, e) => ({ text: e.answer }) as never)
+  await start($)
+  await clock.advance(1)
+
+  const r = await $.classic.UserPromptSubmit({ prompt: 'rebooted, all good', transcript_path: '/t/sess-1.jsonl' } as never)
+  const note = (r as { additionalContext?: string[] }).additionalContext?.join('\n') ?? ''
+  expect(note).toMatch(/a-1 · Reboot nickel/)
+  expect(note).toMatch(/a-2 · Pick a router/)
+  expect(note).not.toMatch(/b-1/)
+  // the generated title replaces the first-prompt name on this session's q's
+  const rename = calls.find(c => c.action === 'batch') as unknown as { writes: { doc_id: string; data: Record<string, unknown> }[] }
+  expect(rename.writes.map(w => [w.doc_id, w.data.sessionName])).toEqual([['a-1', 'Nickel upkeep'], ['a-2', 'Nickel upkeep']])
+
+  await $.turn.complete({ answer: 'Good.', reason: 'answer' } as never)
+  await clock.advance(1)
+  expect(asked[0]).toMatch(/rebooted, all good/)
+  const closes = calls.filter(c => c.action === 'update' && c.data?.status)
+  expect(closes.map(c => [c.doc_id, c.data?.status, c.data?.closedBy])).toEqual([['a-1', 'done', 'sweep']])
 })
